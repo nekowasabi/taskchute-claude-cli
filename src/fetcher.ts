@@ -20,6 +20,8 @@ export interface TaskData {
   endTime?: string;
   duration?: number;
   category?: string;
+  estimatedTime?: string;
+  actualTime?: string;
 }
 
 export interface FetchResult<T = any> {
@@ -399,145 +401,263 @@ export class TaskChuteDataFetcher {
       const allText = await this.page.locator('body').textContent();
       console.log("[Fetcher] getTaskData: ページテキストを取得、長さ:", allText?.length);
       
-      // 時間のパターン（09:48-10:00のような形式）を探す
-      const timePattern = /(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/g;
-      let match;
       let taskIndex = 0;
       
-      // より具体的な方法：visible elementsから直接タスクを抽出
-      const taskElements = await this.page.locator('text=/\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}/').all();
-      console.log(`[Fetcher] getTaskData: 時間パターンで${taskElements.length}個の要素が見つかりました`);
+      // より具体的な方法：指定されたMuiStackクラス以下のタスクを抽出
+      const taskStackElements = await this.page.locator('div.MuiStack-root.my-csffzd').all();
+      console.log(`[Fetcher] getTaskData: MuiStack-root my-csffzd で${taskStackElements.length}個の要素が見つかりました`);
       
-      // tomatoaテキストを直接検索
-      const tomatoaElements = await this.page.locator('text=tomatoa').all();
-      console.log(`[Fetcher] getTaskData: tomatoaテキストで${tomatoaElements.length}個の要素が見つかりました`);
-      
-      // tomatoaタスクの詳細情報を抽出
-      for (const tomatoaElement of tomatoaElements) {
+      // 各MuiStackコンテナの内容を確認
+      for (let i = 0; i < Math.min(taskStackElements.length, 3); i++) {
         try {
-          console.log(`[Fetcher] getTaskData: tomatoaタスクの詳細解析を開始`);
-          
-          // より大きなコンテナから時間情報を探す（5つのレベルまで）
-          for (let level = 1; level <= 5; level++) {
-            try {
-              const containerElement = tomatoaElement.locator(`xpath=ancestor::*[contains(@class, "MuiStack") or contains(@class, "MuiBox")][${level}]`);
-              const containerText = await containerElement.textContent();
-              console.log(`[Fetcher] getTaskData: レベル${level} コンテナテキスト: ${containerText?.substring(0, 300)}...`);
-              
-              // 時間パターンを抽出
-              const timeMatch = containerText?.match(/(\d{1,2}:\d{2})\s*[-\s]*(\d{1,2}:\d{2})/);
-              const allTimeMatches = containerText?.match(/\d{2}:\d{2}/g);
-              
-              if (timeMatch || allTimeMatches) {
-                console.log(`[Fetcher] getTaskData: レベル${level}で時間マッチ: ${JSON.stringify(timeMatch)}`);
-                console.log(`[Fetcher] getTaskData: レベル${level}で全時間: ${JSON.stringify(allTimeMatches)}`);
-                
-                // 21:00, 23:59, 01:56, 02:59 の情報を探す
-                if (allTimeMatches && (
-                  allTimeMatches.includes('21:00') || 
-                  allTimeMatches.includes('23:59') || 
-                  allTimeMatches.includes('01:56') || 
-                  allTimeMatches.includes('02:59')
-                )) {
-                  console.log(`[Fetcher] getTaskData: tomatoaタスクの時間情報が見つかりました: ${JSON.stringify(allTimeMatches)}`);
-                  
-                  // より詳細なタスク情報として保存
-                  const tomatoaTaskData = {
-                    id: `tomatoa-task`,
-                    title: 'tomatoa',
-                    status: 'in-progress',
-                    startTime: allTimeMatches.includes('21:00') ? '21:00' : '',
-                    endTime: allTimeMatches.includes('23:59') ? '23:59' : '',
-                    category: '',
-                    description: `見積時間: ${allTimeMatches.includes('01:56') ? '01:56' : ''}, 実時間: ${allTimeMatches.includes('02:59') ? '02:59' : ''}, レベル: ${level}`,
-                  };
-                  
-                  tasks.push(tomatoaTaskData);
-                  console.log(`[Fetcher] getTaskData: tomatoaタスクの詳細データ: ${JSON.stringify(tomatoaTaskData)}`);
-                  break;
-                }
-              }
-            } catch (levelError) {
-              console.log(`[Fetcher] getTaskData: レベル${level} 解析エラー: ${levelError}`);
-            }
-          }
-          
+          const stackText = await taskStackElements[i].textContent();
+          console.log(`[Fetcher] getTaskData: MuiStack[${i}] 内容: ${stackText?.substring(0, 200)}...`);
         } catch (error) {
-          console.log(`[Fetcher] getTaskData: tomatoa詳細解析エラー: ${error}`);
+          console.log(`[Fetcher] getTaskData: MuiStack[${i}] 内容取得エラー: ${error}`);
         }
       }
       
-      for (const timeElement of taskElements) {
+      // より具体的な方法：新しいタスク形式でvisible elementsから直接タスクを抽出
+      // 実際の形式: "23:59 07:59 瞑想しておやすみなさい（ ；´ワ ｀；） 00:00 07:10"
+      const taskElements = await this.page.locator('text=/\\d{1,2}:\\d{2}\\s+\\d{1,2}:\\d{2}\\s+\\S+/').all();
+      console.log(`[Fetcher] getTaskData: 新タスクパターンで${taskElements.length}個の要素が見つかりました`);
+      
+      // 古いハイフン形式のフォールバック対応も追加
+      const oldFormatElements = await this.page.locator('text=/\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}/').all();
+      console.log(`[Fetcher] getTaskData: 旧形式パターンで${oldFormatElements.length}個の要素が見つかりました`);
+      
+      // MuiStack内の新形式タスクを優先的に探す（セレクタ構文を修正）
+      const stackTaskElements = await this.page.locator('div.MuiStack-root.my-csffzd').locator('text=/\\d{1,2}:\\d{2}\\s+\\d{1,2}:\\d{2}\\s+\\S+/').all();
+      console.log(`[Fetcher] getTaskData: MuiStack内新形式で${stackTaskElements.length}個の要素が見つかりました`);
+      
+      // MuiStack内にタスクがある場合はそれを優先処理
+      const targetElements = stackTaskElements.length > 0 ? stackTaskElements : taskElements;
+      console.log(`[Fetcher] getTaskData: 処理対象要素数: ${targetElements.length} (MuiStack優先: ${stackTaskElements.length > 0})`);
+      
+      for (const timeElement of targetElements) {
         try {
           const timeText = await timeElement.textContent();
           console.log(`[Fetcher] getTaskData: 時間要素: ${timeText}`);
           
-          // 基本的なタスク情報を抽出
-          const timeParts = timeText?.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-          if (timeParts) {
-            // tomatoaタスクかどうかチェック
-            if (timeParts[1] === '21:00' || timeParts[2] === '23:59') {
-              console.log(`[Fetcher] getTaskData: tomatoaタスクが見つかりました: ${timeText}`);
+          // 新しいタスク形式を解析: "HH:MM HH:MM タスク名 HH:MM HH:MM"
+          const taskPattern = /(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})\s+(.+?)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})/;
+          const taskMatch = timeText?.match(taskPattern);
+          if (taskMatch) {
+            const [, startTime, endTime, taskName, estimatedTime, actualTime] = taskMatch;
+            console.log(`[Fetcher] getTaskData: タスク${taskIndex}の詳細解析を開始: ${startTime} ${endTime} "${taskName}" ${estimatedTime} ${actualTime}`);
+            
+            // 新形式では既にタスク名と時間情報が抽出済み
+            let detailedTitle = taskName.trim();
+            let taskStatus = 'unknown';
+            let category = '';
+            
+            // タスク名のクリーンアップ
+            if (detailedTitle) {
+              // 前後の余分な文字を削除
+              detailedTitle = detailedTitle.replace(/^[\d\s\-\/]+|[\d\s\-\/]+$/g, '').trim();
               
-              // より詳細な情報を抽出するため、親要素をたどる
-              let detailedTitle = 'tomatoa';
-              let taskStatus = 'unknown';
+              // 特殊文字や絵文字を含む場合はそのまま保持
+              if (detailedTitle.length === 0) {
+                detailedTitle = `タスク ${startTime}-${endTime}`;
+              }
+            }
+            
+            // タスクステータスの推定
+            if (detailedTitle.includes('完了') || detailedTitle.includes('終了')) {
+              taskStatus = 'completed';
+            } else if (detailedTitle.includes('進行中') || detailedTitle.includes('実行中')) {
+              taskStatus = 'in-progress';
+            } else if (detailedTitle.includes('予定') || detailedTitle.includes('未開始')) {
+              taskStatus = 'pending';
+            } else {
+              // 現在時刻と比較してステータスを推定（簡易版）
+              taskStatus = 'completed'; // デフォルト
+            }
+            
+            tasks.push({
+              id: `task-${taskIndex++}`,
+              title: detailedTitle,
+              status: taskStatus,
+              startTime: startTime,
+              endTime: endTime,
+              category: category,
+              estimatedTime: estimatedTime,
+              actualTime: actualTime,
+              description: '',
+            });
+            
+            console.log(`[Fetcher] getTaskData: タスク${taskIndex-1}の詳細データを保存しました: "${detailedTitle}" (${startTime}-${endTime})`);
+          }
+        } catch (error) {
+          console.log(`[Fetcher] getTaskData: 要素処理エラー: ${error}`);
+        }
+      }
+      
+      // MuiStackから直接タスクを抽出する処理を追加
+      if (tasks.length === 0 && taskStackElements.length > 0) {
+        console.log(`[Fetcher] getTaskData: 通常パターンでタスクが見つからないため、MuiStackから直接抽出を開始`);
+        
+        for (const stackElement of taskStackElements) {
+          try {
+            const stackText = await stackElement.textContent();
+            console.log(`[Fetcher] getTaskData: MuiStack要素: ${stackText?.substring(0, 300)}...`);
+            
+            // MuiStack内の全ての時間パターンを探す
+            const timeMatches = stackText?.match(/\d{1,2}:\d{2}/g);
+            if (timeMatches && timeMatches.length >= 2) {
+              // 基本パターン: 開始時間 終了時間 タスク名 見積時間 実時間
+              if (timeMatches.length >= 4) {
+                const [startTime, endTime, estimatedTime, actualTime] = timeMatches;
+                
+                // タスク名を抽出（時間以外のテキスト部分）
+                let taskName = stackText || '';
+                // 時間情報を除去してタスク名を抽出
+                taskName = taskName.replace(/\d{1,2}:\d{2}/g, '').replace(/\s+/g, ' ').trim();
+                // 数字のみの部分を除去
+                taskName = taskName.replace(/^\d+|\d+$/g, '').trim();
+                // --:-- を除去
+                taskName = taskName.replace(/--:--/g, '').trim();
+                
+                // ダッシュボード情報や無効なタスクを除外
+                const isValidTask = taskName.length > 0 && taskName.length < 100 && 
+                                  !taskName.includes('終了予定') && 
+                                  !taskName.includes('現在：') && 
+                                  !taskName.includes('開始遅延見込') && 
+                                  !taskName.includes('タスク数') &&
+                                  !taskName.includes('ABDEFGHI');
+                
+                if (isValidTask) {
+                  tasks.push({
+                    id: `muistack-task-${tasks.length}`,
+                    title: taskName,
+                    status: 'unknown',
+                    startTime: startTime,
+                    endTime: endTime,
+                    category: '',
+                    estimatedTime: estimatedTime,
+                    actualTime: actualTime,
+                    description: '',
+                  });
+                  
+                  console.log(`[Fetcher] getTaskData: MuiStackタスクを追加: "${taskName}" (${startTime}-${endTime})`);
+                } else {
+                  console.log(`[Fetcher] getTaskData: 無効なタスクをスキップ: "${taskName}"`);
+                }
+              }
+            }
+          } catch (error) {
+            console.log(`[Fetcher] getTaskData: MuiStack要素処理エラー: ${error}`);
+          }
+        }
+      }
+      
+      // 新形式で見つからない場合の旧形式フォールバック処理（詳細情報抽出付き）
+      if (tasks.length === 0 && oldFormatElements.length > 0) {
+        console.log(`[Fetcher] getTaskData: 新形式でタスクが見つからないため、旧形式でフォールバック処理を開始`);
+        
+        for (const oldElement of oldFormatElements) {
+          try {
+            const oldTimeText = await oldElement.textContent();
+            console.log(`[Fetcher] getTaskData: 旧形式要素: ${oldTimeText}`);
+            
+            // 基本的なタスク情報を抽出（旧形式）
+            const timeParts = oldTimeText?.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+            if (timeParts) {
+              let detailedTitle = `タスク ${timeParts[1]}-${timeParts[2]}`;
               let estimatedTime = '';
               let actualTime = '';
+              let taskStatus = 'unknown';
               
-              try {
-                // 親要素からより多くの情報を取得
-                const parentElement = timeElement.locator('xpath=ancestor::*[contains(@class, "MuiStack") or contains(@class, "MuiBox")][1]');
-                const parentText = await parentElement.textContent();
-                console.log(`[Fetcher] getTaskData: 親要素のテキスト: ${parentText}`);
-                
-                // tomatoa関連の情報を抽出
-                if (parentText && parentText.includes('tomatoa')) {
-                  const parts = parentText.split(/\s+/);
-                  for (let i = 0; i < parts.length; i++) {
-                    if (parts[i] === 'tomatoa') {
-                      detailedTitle = parts[i];
-                      // 前後の時間情報も取得
-                      if (i + 1 < parts.length && parts[i + 1].match(/^\d{2}:\d{2}$/)) {
-                        estimatedTime = parts[i + 1];
+              // 周辺のDOM構造から詳細情報を抽出
+              for (let level = 1; level <= 4; level++) {
+                try {
+                  const containerElement = oldElement.locator(`xpath=ancestor::*[contains(@class, "MuiStack") or contains(@class, "MuiBox") or contains(@class, "MuiGrid") or contains(@class, "MuiContainer")][${level}]`);
+                  const containerText = await containerElement.textContent({ timeout: 3000 });
+                  console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} コンテナテキスト: ${containerText?.substring(0, 200)}...`);
+                  
+                  if (!containerText) continue;
+                  
+                  // 1. タスク名を抽出（日本語文字を含むテキスト）
+                  if (detailedTitle.includes('タスク')) {
+                    // 時間の後にある日本語テキストを探す
+                    const afterTimePattern = new RegExp(`${timeParts[1].replace(':', '\\\\:')}\\\\s*-\\\\s*${timeParts[2].replace(':', '\\\\:')}\\\\s*([^\\\\d\\\\n]+?)(?:\\\\s*\\\\d{1,2}:\\\\d{2}|$|\\\\n)`, 'i');
+                    const afterTimeMatch = containerText.match(afterTimePattern);
+                    
+                    if (afterTimeMatch && afterTimeMatch[1]) {
+                      const candidateTitle = afterTimeMatch[1].trim()
+                        .replace(/^[\\/\\d\\s-]+|[\\/\\d\\s-]+$/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                      
+                      if (candidateTitle.length > 0 && candidateTitle.length < 100 && !/^\\d+$/.test(candidateTitle)) {
+                        detailedTitle = candidateTitle;
+                        console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} タイトル抽出成功: ${detailedTitle}`);
                       }
-                      if (i + 2 < parts.length && parts[i + 2].match(/^\d{2}:\d{2}$/)) {
-                        actualTime = parts[i + 2];
+                    }
+                    
+                    // 日本語パターンでの抽出
+                    const japanesePattern = /([ひ-ろァ-ヶー一-龯\\（\\）\\；\\´\\`\\ワ\\s]+)/g;
+                    const japaneseMatches = containerText.match(japanesePattern);
+                    
+                    if (japaneseMatches && detailedTitle.includes('タスク')) {
+                      for (const match of japaneseMatches) {
+                        const cleanMatch = match.trim().replace(/^[\\/\\d\\s-]+|[\\/\\d\\s-]+$/g, '');
+                        if (cleanMatch.length > 2 && cleanMatch.length < 80 && 
+                            !cleanMatch.includes('見積') && !cleanMatch.includes('実時間') &&
+                            !cleanMatch.includes('タスク')) {
+                          detailedTitle = cleanMatch;
+                          console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} 日本語タイトル抽出: ${detailedTitle}`);
+                          break;
+                        }
                       }
-                      break;
                     }
                   }
+                  
+                  // 2. 詳細時間情報を抽出
+                  const allTimeMatches = containerText.match(/\\d{1,2}:\\d{2}/g);
+                  if (allTimeMatches && allTimeMatches.length >= 4) {
+                    const startIndex = allTimeMatches.findIndex(time => time === timeParts[1]);
+                    const endIndex = allTimeMatches.findIndex(time => time === timeParts[2]);
+                    
+                    if (startIndex !== -1 && endIndex !== -1) {
+                      // 見積時間と実時間を推定（時間の順序で判定）
+                      const remainingTimes = allTimeMatches.filter((time, idx) => idx !== startIndex && idx !== endIndex);
+                      if (remainingTimes.length >= 2) {
+                        estimatedTime = remainingTimes[0];
+                        actualTime = remainingTimes[1];
+                        console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} 時間情報抽出: 見積=${estimatedTime}, 実時間=${actualTime}`);
+                      }
+                    }
+                  }
+                  
+                  // 十分な情報が得られた場合は停止
+                  if (!detailedTitle.includes('タスク') && (estimatedTime || actualTime)) {
+                    console.log(`[Fetcher] getTaskData: 旧形式 レベル${level}で十分な情報取得、探索終了`);
+                    break;
+                  }
+                  
+                } catch (levelError) {
+                  console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} 解析エラー: ${levelError}`);
                 }
-              } catch (parentError) {
-                console.log(`[Fetcher] getTaskData: 親要素の解析エラー: ${parentError}`);
               }
               
               tasks.push({
-                id: `task-${taskIndex++}-tomatoa`,
+                id: `fallback-task-${tasks.length}`,
                 title: detailedTitle,
                 status: taskStatus,
                 startTime: timeParts[1],
                 endTime: timeParts[2],
                 category: '',
-                description: `見積時間: ${estimatedTime}, 実時間: ${actualTime}`,
-              });
-              
-              console.log(`[Fetcher] getTaskData: tomatoaタスクの詳細データを保存しました`);
-            } else {
-              // 通常のタスク
-              tasks.push({
-                id: `task-${taskIndex++}`,
-                title: `タスク ${timeParts[1]}-${timeParts[2]}`,
-                status: 'unknown',
-                startTime: timeParts[1],
-                endTime: timeParts[2],
-                category: '',
+                estimatedTime: estimatedTime,
+                actualTime: actualTime,
                 description: '',
               });
+              
+              console.log(`[Fetcher] getTaskData: 旧形式フォールバックタスクを追加: "${detailedTitle}" (${timeParts[1]}-${timeParts[2]})`);
             }
+          } catch (error) {
+            console.log(`[Fetcher] getTaskData: 旧形式要素処理エラー: ${error}`);
           }
-        } catch (error) {
-          console.log(`[Fetcher] getTaskData: 要素処理エラー: ${error}`);
         }
       }
       console.log(`[Fetcher] getTaskData: 4. データ抽出が完了。${tasks.length}件のタスクを抽出しました。`);
