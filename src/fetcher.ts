@@ -142,7 +142,7 @@ export class TaskChuteDataFetcher {
     }
 
     try {
-      await this.page!.goto("https://taskchute.cloud", {
+      await this.page!.goto("https://taskchute.cloud/taskchute", {
         waitUntil: "networkidle",
         timeout: this.options.timeout
       });
@@ -152,6 +152,30 @@ export class TaskChuteDataFetcher {
 
     } catch (error) {
       return { success: false, error: (error as Error).message };
+    }
+  }
+
+  async waitForLoginSuccess(timeout: number): Promise<boolean> {
+    if (!this.page) {
+      return false;
+    }
+    try {
+      await this.page.waitForSelector('header', { timeout });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async isUserLoggedIn(): Promise<boolean> {
+    if (!this.page) {
+      return false;
+    }
+    try {
+      await this.page.waitForSelector('header', { timeout: 5000 });
+      return true;
+    } catch (error) {
+      return false;
     }
   }
 
@@ -213,7 +237,6 @@ export class TaskChuteDataFetcher {
     }
 
     try {
-      await this.page.waitForLoadState('networkidle');
       const html = await this.page.content();
       return { success: true, html };
 
@@ -253,69 +276,181 @@ export class TaskChuteDataFetcher {
   }
 
   async getTaskData(mockOptions: { mock?: boolean } = {}): Promise<FetchResult<TaskData[]>> {
+    console.log("[Fetcher] getTaskData: 開始");
     if (mockOptions.mock) {
-      const mockTasks: TaskData[] = [
-        {
-          id: "task-1",
-          title: "Mock Task 1",
-          status: "completed",
-          description: "This is a mock task",
-          startTime: "09:00",
-          endTime: "10:00",
-          duration: 60,
-          category: "Work"
-        },
-        {
-          id: "task-2",
-          title: "Mock Task 2",
-          status: "in-progress",
-          description: "Another mock task",
-          startTime: "10:00",
-          endTime: "",
-          duration: 0,
-          category: "Personal"
-        }
-      ];
-
-      return { success: true, tasks: mockTasks };
+      // Mock implementation...
+      return { success: true, tasks: [] };
     }
 
     if (!this.page) {
+      console.error("[Fetcher] getTaskData: pageオブジェクトがありません");
       return { success: false, error: "No active browser page" };
     }
 
     try {
-      // TaskChuteの実際のDOM構造に基づいてデータを取得
-      const tasks = await this.page.evaluate(() => {
-        const taskElements = (globalThis as any).document.querySelectorAll('.task-row, .task-item, [data-task-id]');
-        const tasks: any[] = [];
+      console.log("[Fetcher] getTaskData: 1. rowgroupの待機を開始");
+      
+      // デバッグ用：現在のページの情報を確認
+      const currentUrl = this.page.url();
+      console.log("[Fetcher] getTaskData: 現在のURL:", currentUrl);
+      
+      // スクリーンショットを撮る
+      await this.page.screenshot({ path: "debug-before-rowgroup.png", fullPage: true });
+      console.log("[Fetcher] getTaskData: スクリーンショット保存: debug-before-rowgroup.png");
+      
+      // 現在のDOM構造を確認
+      const bodyHtml = await this.page.locator('body').innerHTML();
+      console.log("[Fetcher] getTaskData: body要素の最初の1000文字:", bodyHtml.substring(0, 1000));
+      
+      // より柔軟な待機戦略を使用
+      console.log("[Fetcher] getTaskData: テーブル要素の待機を開始");
+      
+      // 複数のセレクタを試す
+      const selectors = [
+        'div[role="rowgroup"]',
+        'div[role="grid"]',
+        'table',
+        '[data-testid="task-table"]',
+        '.task-list',
+        'div[class*="table"]',
+        'div[class*="grid"]'
+      ];
+      
+      let foundElement = null;
+      for (const selector of selectors) {
+        try {
+          console.log(`[Fetcher] getTaskData: ${selector} を試行中`);
+          await this.page.waitForSelector(selector, { timeout: 5000 });
+          foundElement = selector;
+          console.log(`[Fetcher] getTaskData: ${selector} が見つかりました`);
+          break;
+        } catch (error) {
+          console.log(`[Fetcher] getTaskData: ${selector} が見つかりませんでした`);
+        }
+      }
+      
+      if (!foundElement) {
+        // 最後の手段として長時間待機
+        console.log("[Fetcher] getTaskData: 最後の手段でrowgroupを60秒間待機");
+        await this.page.waitForSelector('div[role="rowgroup"]', { timeout: 60000 });
+      }
+      console.log("[Fetcher] getTaskData: 1. rowgroupの待機が完了");
 
-        taskElements.forEach((element: any, index: number) => {
-          const titleElement = element.querySelector('.task-title, .title, h3, h4');
-          const statusElement = element.querySelector('.task-status, .status, [data-status]');
-          const timeElement = element.querySelector('.task-time, .time, .duration');
-          const categoryElement = element.querySelector('.task-category, .category, .tag');
+      console.log("[Fetcher] getTaskData: 2. スケルトンが消えるのを待機開始");
+      try {
+        // 最初のスケルトン要素だけを待機
+        await this.page.locator('span.MuiSkeleton-root').first().waitFor({ state: 'hidden', timeout: this.options.timeout });
+        console.log("[Fetcher] getTaskData: 2. スケルトンが消えるのを待機完了");
+      } catch (error) {
+        console.log("[Fetcher] getTaskData: スケルトン待機をスキップして続行");
+        // スケルトン待機が失敗してもデータ取得を試行
+      }
+      
+      console.log("[Fetcher] getTaskData: 3. 最終待機を開始");
+      await this.page.waitForTimeout(2000);
+      console.log("[Fetcher] getTaskData: 3. 最終待機が完了");
 
-          const task: any = {
-            id: element.getAttribute('data-task-id') || `task-${index + 1}`,
-            title: titleElement?.textContent?.trim() || `Task ${index + 1}`,
-            status: statusElement?.textContent?.trim() || 'unknown',
-            description: element.getAttribute('data-description') || '',
-            startTime: timeElement?.textContent?.trim() || '',
-            category: categoryElement?.textContent?.trim() || ''
-          };
+      console.log("[Fetcher] getTaskData: 4. データ抽出を開始");
+      
+      // DOM構造を詳しく調べる
+      const pageContent = await this.page.content();
+      console.log("[Fetcher] getTaskData: ページのHTMLを確認中");
+      
+      // HTMLを一時ファイルに保存してデバッグ
+      await Deno.writeTextFile("debug-page-content.html", pageContent);
+      console.log("[Fetcher] getTaskData: HTMLをdebug-page-content.htmlに保存しました");
+      
+      // 複数のセレクタでタスク行を検索
+      const possibleSelectors = [
+        'div[role="row"]',
+        'tr',
+        '[data-testid*="task"]', 
+        'li[class*="task"]',
+        'div[class*="task"]',
+        'div[class*="item"]',
+        'div[class*="row"]'
+      ];
+      
+      let rows: any[] = [];
+      let usedSelector = '';
+      
+      for (const selector of possibleSelectors) {
+        try {
+          const foundRows = await this.page.locator(selector).all();
+          if (foundRows.length > 0) {
+            rows = foundRows;
+            usedSelector = selector;
+            console.log(`[Fetcher] getTaskData: ${selector} で ${foundRows.length}行見つかりました`);
+            break;
+          }
+        } catch (error) {
+          console.log(`[Fetcher] getTaskData: ${selector} の検索に失敗`);
+        }
+      }
+      
+      console.log(`[Fetcher] getTaskData: 最終的に${usedSelector}で${rows.length}行見つかりました`);
+      
+      // 新しいアプローチ：ページから全てのテキストを抽出してタスクを探す
+      console.log("[Fetcher] getTaskData: テキストベースの抽出を開始");
+      
+      const tasks: TaskData[] = [];
+      
+      // ページから全体のテキストを取得
+      const allText = await this.page.locator('body').textContent();
+      console.log("[Fetcher] getTaskData: ページテキストを取得、長さ:", allText?.length);
+      
+      // 時間のパターン（09:48-10:00のような形式）を探す
+      const timePattern = /(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/g;
+      let match;
+      let taskIndex = 0;
+      
+      // より具体的な方法：visible elementsから直接タスクを抽出
+      const taskElements = await this.page.locator('text=/\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}/').all();
+      console.log(`[Fetcher] getTaskData: 時間パターンで${taskElements.length}個の要素が見つかりました`);
+      
+      for (const timeElement of taskElements) {
+        try {
+          const timeText = await timeElement.textContent();
+          console.log(`[Fetcher] getTaskData: 時間要素: ${timeText}`);
+          
+          // 基本的なタスク情報を抽出（タイトルは時間のまま）
+          const timeParts = timeText?.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+          if (timeParts) {
+            tasks.push({
+              id: `task-${taskIndex++}`,
+              title: `タスク ${timeParts[1]}-${timeParts[2]}`,
+              status: 'unknown',
+              startTime: timeParts[1],
+              endTime: timeParts[2],
+              category: '',
+              description: '',
+            });
+          }
+        } catch (error) {
+          console.log(`[Fetcher] getTaskData: 要素処理エラー: ${error}`);
+        }
+      }
+      console.log(`[Fetcher] getTaskData: 4. データ抽出が完了。${tasks.length}件のタスクを抽出しました。`);
 
-          tasks.push(task);
-        });
-
-        return tasks;
-      });
+      if (tasks.length === 0) {
+          console.log("[Fetcher] getTaskData: タスクが見つからなかったため、スクリーンショットを保存します。");
+          await this.takeScreenshot('no-tasks-found.png');
+          return { success: false, error: "Data extraction failed: No tasks found on the page. Saved screenshot to no-tasks-found.png" };
+      }
 
       return { success: true, tasks };
 
     } catch (error) {
+      console.error(`[Fetcher] getTaskData: エラー発生 - ${(error as Error).stack}`);
+      await this.takeScreenshot('error-screenshot.png');
       return { success: false, error: (error as Error).message };
+    } finally {
+      console.log("[Fetcher] getTaskData: 終了");
     }
+  }
+
+  getCurrentUrl(): string {
+    return this.page?.url() || "No page";
   }
 
   async getDailyTaskStats(): Promise<FetchResult<any>> {
@@ -382,15 +517,22 @@ export class TaskChuteDataFetcher {
 
   async cleanup(): Promise<{ success: boolean; error?: string }> {
     try {
-      if (this.page) {
+      if (this.page && !this.page.isClosed()) {
         await this.page.close();
-        this.page = null;
       }
+      this.page = null;
 
-      if (this.browser) {
-        await this.browser.close();
-        this.browser = null;
+      if (this.context) {
+        await this.context.close();
       }
+      this.context = null;
+
+      // When using launchPersistentContext, browser.close() is not needed
+      // as context.close() handles it.
+      if (this.browser && !this.options.userDataDir && this.browser.isConnected()) {
+        await this.browser.close();
+      }
+      this.browser = null;
 
       return { success: true };
 

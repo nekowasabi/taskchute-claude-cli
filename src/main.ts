@@ -3,11 +3,11 @@
 import { CLI } from "./cli.ts";
 
 async function main() {
+  const cli = new CLI();
+  const args = Deno.args;
+
   try {
-    const cli = new CLI();
-    const args = Deno.args;
-    
-    if (args.length === 0) {
+    if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
       console.log(cli.getHelpMessage());
       Deno.exit(0);
     }

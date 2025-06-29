@@ -12,7 +12,7 @@ export interface CLIResult {
 
 export class CLI {
   private auth: TaskChuteAuth;
-  private fetcher: TaskChuteDataFetcher;
+  public fetcher: TaskChuteDataFetcher;
   private config: ConfigManager;
 
   constructor() {
@@ -118,26 +118,26 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
   private async handleLogin(options: Record<string, any>): Promise<CLIResult> {
     try {
-      console.log("ブラウザを起動してTaskChute Cloudに手動でログインしてください...");
+      console.log("ブラウザを起動します。TaskChute Cloudにログインしてください...");
+      this.fetcher.updateOptions({ headless: false });
 
-      // ブラウザの設定を更新
-      this.fetcher.updateOptions({
-        headless: false, // 必ず表示モードで起動
-        ...(options.browser && { browser: options.browser }),
-        ...(options.timeout && { timeout: options.timeout }),
-      });
-
-      // ブラウザを起動してログインページを開く
       await this.fetcher.launchBrowser();
       await this.fetcher.navigateToTaskChute();
 
-      console.log("ログイン後、このウィンドウを閉じてください。");
-      console.log("ログイン状態を確認するには、`taskchute-cli check-login` を実行してください。");
+      console.log("ログイン成功を待っています...（最大5分）");
+      const loginSuccess = await this.fetcher.waitForLoginSuccess(300000); // 5分待機
 
-      // ユーザーが手動で操作するため、ここでは待機しない
-      // 必要であれば、特定のURLに到達するまで待機するなどの処理を追加可能
-
-      return { success: true, command: "login", options };
+      if (loginSuccess) {
+        console.log("ログイン成功を検知しました。認証情報を保存しています...");
+        await this.auth.createSession();
+        await this.fetcher.cleanup(); // ブラウザを閉じてセッションを保存
+        console.log("ログインに成功しました。`fetch`コマンドなどが利用できます。");
+        return { success: true, command: "login" };
+      } else {
+        console.error("ログインが確認できませんでした。タイムアウトしました。");
+        await this.fetcher.cleanup();
+        return { success: false, command: "login", error: "Login timeout" };
+      }
     } catch (error) {
       return {
         success: false,
@@ -187,22 +187,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
   private async handleStats(options: Record<string, any>): Promise<CLIResult> {
     try {
-      let isLoggedIn = await this.auth.isLoggedIn();
-
-      if (!isLoggedIn) {
-        console.log("ログインしていません。ブラウザを起動してログインしてください...");
-        await this.handleLogin(options);
-        
-        // ログインが成功したか再度確認
-        const checkResult = await this.handleCheckLogin(options);
-        if (!checkResult.success) {
-          return {
-            success: false,
-            command: "stats",
-            error: "ログインに失敗したため、統計情報を取得できませんでした。",
-          };
-        }
-        isLoggedIn = true;
+      await this.fetcher.navigateToTaskChute();
+      if (!await this.fetcher.isUserLoggedIn()) {
+        return { success: false, command: "stats", error: "ログインしていません。`taskchute-cli login` を実行してください。" };
       }
 
       console.log("今日のタスクの統計情報を取得中...");
@@ -235,25 +222,13 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         throw new Error("--output オプションは必須です");
       }
 
-      let isLoggedIn = await this.auth.isLoggedIn();
-      if (!isLoggedIn) {
-        console.log("ログインしていません。ブラウザを起動してログインしてください...");
-        await this.handleLogin(options);
-        
-        const checkResult = await this.handleCheckLogin(options);
-        if (!checkResult.success) {
-          return {
-            success: false,
-            command: "save-html",
-            error: "ログインに失敗したため、HTMLを保存できませんでした。",
-          };
-        }
-        isLoggedIn = true;
+      await this.fetcher.navigateToTaskChute();
+      if (!await this.fetcher.isUserLoggedIn()) {
+        return { success: false, command: "save-html", error: "ログインしていません。`taskchute-cli login` を実行してください。" };
       }
 
       console.log(`現在のページのHTMLを ${options.output} に保存中...`);
 
-      await this.fetcher.navigateToTaskChute();
       const htmlResult = await this.fetcher.getPageHTML();
       if (!htmlResult.success) {
         return {
@@ -278,44 +253,54 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   }
 
   private async handleFetch(options: Record<string, any>): Promise<CLIResult> {
+    console.log("[CLI] handleFetch: 開始");
     try {
       if (!options.output) {
         throw new Error("--output オプションは必須です");
       }
 
-      // 認証状態を確認
-      const isLoggedIn = await this.auth.isLoggedIn();
-      if (!isLoggedIn) {
-        return { 
-          success: false, 
-          command: "fetch", 
-          error: "先に `taskchute-cli check-login` を実行してログイン状態を確認してください" 
-        };
-      }
+      console.log("[CLI] handleFetch: ページ遷移を開始");
+      await this.fetcher.navigateToTaskChute();
+      console.log(`[CLI] handleFetch: ページ遷移完了。現在のURL: ${this.fetcher.getCurrentUrl()}`);
 
-      console.log("TaskChuteデータを取得中...");
-      
-      // データを取得
+      console.log("[CLI] handleFetch: ログイン状態を確認");
+      if (!await this.fetcher.isUserLoggedIn()) {
+        console.error("[CLI] handleFetch: ログイ���していません");
+        return { success: false, command: "fetch", error: "ログインしていません。`taskchute-cli login` を実行してください。" };
+      }
+      console.log("[CLI] handleFetch: ログイン済みです");
+
+      console.log("[CLI] handleFetch: TaskChuteデータ取得開始");
       const taskData = await this.fetcher.getTaskData();
       
       if (!taskData.success) {
+        console.error(`[CLI] handleFetch: データの取得に失敗しました: ${taskData.error}`);
         return { 
           success: false, 
           command: "fetch", 
-          error: "データの取得に失敗しました" 
+          error: `データの取得に失敗しました: ${taskData.error}`
         };
       }
+      console.log("[CLI] handleFetch: TaskChuteデータ取得完了");
 
-      // ファイルに保存
+      console.log("[CLI] handleFetch: ファイルへの保存を開始");
       let saveResult;
       if (options.output.endsWith('.json')) {
         saveResult = await this.fetcher.saveJSONToFile(taskData, options.output);
       } else {
         const htmlResult = await this.fetcher.getPageHTML();
+        if (!htmlResult.success) {
+          return {
+            success: false,
+            command: "fetch",
+            error: "HTMLの取得に失敗しました",
+          };
+        }
         saveResult = await this.fetcher.saveHTMLToFile(htmlResult.html!, options.output);
       }
 
       if (!saveResult.success) {
+        console.error("[CLI] handleFetch: ファイルの保存に失敗しました");
         return { 
           success: false, 
           command: "fetch", 
@@ -323,15 +308,19 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         };
       }
 
-      console.log(`データを ${options.output} に保存しました。`);
+      console.log(`[CLI] handleFetch: データを ${options.output} に保存しました。`);
       return { success: true, command: "fetch", options };
 
     } catch (error) {
+      console.error(`[CLI] handleFetch: エラー発生 - ${(error as Error).message}`);
       return { 
         success: false, 
         command: "fetch", 
         error: (error as Error).message 
       };
+    } finally {
+      console.log("[CLI] handleFetch: 終了");
+      await this.fetcher.cleanup();
     }
   }
 
