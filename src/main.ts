@@ -2,6 +2,9 @@
 
 import { CLI } from "./cli.ts";
 
+/**
+ * メイン関数
+ */
 async function main() {
   const cli = new CLI();
   const args = Deno.args;

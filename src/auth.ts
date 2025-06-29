@@ -1,33 +1,53 @@
 import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
 
+/**
+ * ログイン認証情報
+ */
 export interface LoginCredentials {
   email: string;
   password: string;
 }
 
+/**
+ * セッションデータ
+ */
 export interface SessionData {
   email: string;
   loggedInAt: number;
   sessionValid: boolean;
 }
 
+/**
+ * 認証結果
+ */
 export interface AuthResult {
   success: boolean;
   email?: string;
   error?: string;
 }
 
+/**
+ * TaskChuteの認証とセッション管理を扱うクラス
+ */
 export class TaskChuteAuth {
   private credentials: LoginCredentials;
   private sessionPath: string;
 
+  /**
+   * @param credentials ログイン認証情報
+   */
   constructor(credentials: LoginCredentials) {
     this.validateCredentials(credentials);
     this.credentials = credentials;
     this.sessionPath = join(Deno.env.get("HOME") || ".", ".taskchute", "session.json");
   }
 
+  /**
+   * 認証情報のバリデーションを行う
+   * @param credentials ログイン認証情報
+   * @private
+   */
   private validateCredentials(credentials: LoginCredentials): void {
     if (!credentials.email || !credentials.password) {
       throw new Error("Invalid credentials: email and password are required");
@@ -38,15 +58,29 @@ export class TaskChuteAuth {
     }
   }
 
+  /**
+   * メールアドレスの形式が有効かチェックする
+   * @param email メールアドレス
+   * @returns 有効な場合はtrue、そうでない場合はfalse
+   * @private
+   */
   private isValidEmail(email: string): boolean {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
   }
 
+  /**
+   * ログイン認証情報を取得する
+   * @returns ログイン認証情報
+   */
   getCredentials(): LoginCredentials {
     return { ...this.credentials };
   }
 
+  /**
+   * セッションデータをファイルに保存する
+   * @param sessionData 保存するセッションデータ
+   */
   async saveSession(sessionData: SessionData): Promise<void> {
     await ensureDir(join(this.sessionPath, ".."));
     
@@ -54,6 +88,10 @@ export class TaskChuteAuth {
     await Deno.writeTextFile(this.sessionPath, sessionJson);
   }
 
+  /**
+   * 保存されたセッションデータを取得する
+   * @returns セッションデータ、存在しない場合はnull
+   */
   async getStoredSession(): Promise<SessionData | null> {
     try {
       const sessionJson = await Deno.readTextFile(this.sessionPath);
@@ -63,6 +101,11 @@ export class TaskChuteAuth {
     }
   }
 
+  /**
+   * ログイン状態かチェックする
+   * セッションの有効期限は24時間
+   * @returns ログイン状態の場合はtrue、そうでない場合はfalse
+   */
   async isLoggedIn(): Promise<boolean> {
     const session = await this.getStoredSession();
     if (!session) return false;
@@ -81,6 +124,10 @@ export class TaskChuteAuth {
     return session.sessionValid && session.email === this.credentials.email;
   }
 
+  /**
+   * 新しいセッションを作成する
+   * @returns 認証結果
+   */
   async createSession(): Promise<AuthResult> {
     try {
       const sessionData: SessionData = {
@@ -104,6 +151,9 @@ export class TaskChuteAuth {
     }
   }
 
+  /**
+   * ログアウトし、セッションファイルを削除する
+   */
   async logout(): Promise<void> {
     try {
       await Deno.remove(this.sessionPath);
@@ -112,6 +162,10 @@ export class TaskChuteAuth {
     }
   }
 
+  /**
+   * セッションを更新する
+   * @returns 認証結果
+   */
   async refreshSession(): Promise<AuthResult> {
     const session = await this.getStoredSession();
     if (!session) {
@@ -131,6 +185,10 @@ export class TaskChuteAuth {
     };
   }
 
+  /**
+   * 現在のセッション状態を取得する
+   * @returns セッション状態
+   */
   async getSessionStatus(): Promise<{
     isLoggedIn: boolean;
     email?: string;
@@ -156,6 +214,11 @@ export class TaskChuteAuth {
     };
   }
 
+  /**
+   * 環境変数からTaskChuteAuthインスタンスを生成する
+   * @returns TaskChuteAuthインスタンス
+   * @static
+   */
   static fromEnvironment(): TaskChuteAuth {
     const email = Deno.env.get("TASKCHUTE_EMAIL");
     const password = Deno.env.get("TASKCHUTE_PASSWORD");

@@ -3,6 +3,9 @@ import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
 import { LoginCredentials } from "./auth.ts";
 
+/**
+ * Fetcherのオプション
+ */
 export interface FetcherOptions {
   headless?: boolean;
   browser?: "chromium" | "firefox" | "webkit";
@@ -11,6 +14,9 @@ export interface FetcherOptions {
   userDataDir?: string;
 }
 
+/**
+ * タスクデータ
+ */
 export interface TaskData {
   id: string;
   title: string;
@@ -24,6 +30,9 @@ export interface TaskData {
   actualTime?: string;
 }
 
+/**
+ * フェッチ結果
+ */
 export interface FetchResult<T = any> {
   success: boolean;
   data?: T;
@@ -32,12 +41,18 @@ export interface FetchResult<T = any> {
   error?: string;
 }
 
+/**
+ * ナビゲーション結果
+ */
 export interface NavigationResult {
   success: boolean;
   currentUrl?: string;
   error?: string;
 }
 
+/**
+ * 認証結果
+ */
 export interface AuthResult {
   success: boolean;
   token?: string;
@@ -45,18 +60,27 @@ export interface AuthResult {
   error?: string;
 }
 
+/**
+ * 保存結果
+ */
 export interface SaveResult {
   success: boolean;
   filePath?: string;
   error?: string;
 }
 
+/**
+ * TaskChuteのデータを取得するためのクラス
+ */
 export class TaskChuteDataFetcher {
   private options: Required<FetcherOptions>;
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
 
+  /**
+   * @param options Fetcherのオプション
+   */
   constructor(options: FetcherOptions = {}) {
     this.options = {
       headless: options.headless ?? true,
@@ -67,14 +91,27 @@ export class TaskChuteDataFetcher {
     };
   }
 
+  /**
+   * Fetcherのオプションを更新する
+   * @param newOptions 新しいオプション
+   */
   updateOptions(newOptions: Partial<FetcherOptions>): void {
     this.options = { ...this.options, ...newOptions };
   }
 
+  /**
+   * 現在のオプションを取得する
+   * @returns 現在のオプション
+   */
   getOptions(): Required<FetcherOptions> {
     return { ...this.options };
   }
 
+  /**
+   * ブラウザを起動する
+   * @param mockOptions モックオプション
+   * @returns 起動結果
+   */
   async launchBrowser(mockOptions: { mock?: boolean } = {}): Promise<{ success: boolean; error?: string }> {
     if (mockOptions.mock) {
       return { success: true };
@@ -125,6 +162,11 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * TaskChute Cloudのページに遷移する
+   * @param mockOptions モックオプション
+   * @returns ナビゲーション結果
+   */
   async navigateToTaskChute(mockOptions: { mock?: boolean; forceTimeout?: boolean; forceNetworkError?: boolean } = {}): Promise<NavigationResult> {
     if (mockOptions.mock) {
       if (mockOptions.forceTimeout) {
@@ -157,6 +199,11 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * ログイン成功を待機する
+   * @param timeout タイムアウト時間 (ミリ秒)
+   * @returns ログイン成功した場合はtrue
+   */
   async waitForLoginSuccess(timeout: number): Promise<boolean> {
     if (!this.page) {
       return false;
@@ -169,6 +216,10 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * ユーザーがログインしているか確認する
+   * @returns ログインしている場合はtrue
+   */
   async isUserLoggedIn(): Promise<boolean> {
     if (!this.page) {
       return false;
@@ -181,6 +232,10 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * ログイン状態を確認する
+   * @returns ログイン状態とエラー情報
+   */
   async checkLoginStatus(): Promise<{ isLoggedIn: boolean; error?: string }> {
     if (!this.page) {
       const browserResult = await this.launchBrowser();
@@ -207,6 +262,11 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * 認証後のリダイレクトを待機する
+   * @param mockOptions モックオプション
+   * @returns 認証結果
+   */
   async waitForAuthRedirect(mockOptions: { mock?: boolean } = {}): Promise<AuthResult> {
     if (mockOptions.mock) {
       return { success: true, finalUrl: "https://taskchute.cloud/taskchute" };
@@ -226,6 +286,11 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * ページのHTMLを取得する
+   * @param mockOptions モックオプション
+   * @returns フェッチ結果
+   */
   async getPageHTML(mockOptions: { mock?: boolean } = {}): Promise<FetchResult<string>> {
     if (mockOptions.mock) {
       return {
@@ -247,6 +312,12 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * 指定されたセレクタに一致する要素を取得する
+   * @param selector CSSセレクタ
+   * @param mockOptions モックオプション
+   * @returns 要素のデータ配列
+   */
   async getElements(selector: string, mockOptions: { mock?: boolean } = {}): Promise<any[]> {
     if (mockOptions.mock) {
       return [
@@ -277,6 +348,11 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * タスクデータを取得する
+   * @param mockOptions モックオプション
+   * @returns フェッチ結果
+   */
   async getTaskData(mockOptions: { mock?: boolean } = {}): Promise<FetchResult<TaskData[]>> {
     console.log("[Fetcher] getTaskData: 開始");
     if (mockOptions.mock) {
@@ -679,10 +755,18 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * 現在のページのURLを取得する
+   * @returns 現在のURL
+   */
   getCurrentUrl(): string {
     return this.page?.url() || "No page";
   }
 
+  /**
+   * 1日のタスク統計情報を取得する
+   * @returns フェッチ結果
+   */
   async getDailyTaskStats(): Promise<FetchResult<any>> {
     if (!this.page) {
       return { success: false, error: "No active browser page" };
@@ -707,6 +791,12 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * HTMLをファイルに保存する
+   * @param html 保存するHTML文字列
+   * @param filePath 保存先のファイルパス
+   * @returns 保存結果
+   */
   async saveHTMLToFile(html: string, filePath: string): Promise<SaveResult> {
     try {
       await ensureDir(filePath.substring(0, filePath.lastIndexOf('/')));
@@ -718,6 +808,12 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * JSONデータをファイルに保存する
+   * @param data 保存するデータ
+   * @param filePath 保存先のファイルパス
+   * @returns 保存結果
+   */
   async saveJSONToFile(data: any, filePath: string): Promise<SaveResult> {
     try {
       await ensureDir(filePath.substring(0, filePath.lastIndexOf('/')));
@@ -730,6 +826,11 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * スクリーンショットを撮る
+   * @param filePath 保存先のファイルパス
+   * @returns 保存結果
+   */
   async takeScreenshot(filePath: string): Promise<SaveResult> {
     if (!this.page) {
       return { success: false, error: "No active browser page" };
@@ -745,6 +846,10 @@ export class TaskChuteDataFetcher {
     }
   }
 
+  /**
+   * ブラウザとページをクリーンアップする
+   * @returns クリーンアップ結果
+   */
   async cleanup(): Promise<{ success: boolean; error?: string }> {
     try {
       if (this.page && !this.page.isClosed()) {

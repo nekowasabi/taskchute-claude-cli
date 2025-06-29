@@ -3,6 +3,9 @@ import { TaskChuteAuth } from "./auth.ts";
 import { TaskChuteDataFetcher } from "./fetcher.ts";
 import { ConfigManager } from "./config.ts";
 
+/**
+ * CLIの実行結果
+ */
 export interface CLIResult {
   success: boolean;
   command?: string;
@@ -10,6 +13,9 @@ export interface CLIResult {
   error?: string;
 }
 
+/**
+ * CLIアプリケーションのメインクラス
+ */
 export class CLI {
   private auth: TaskChuteAuth;
   public fetcher: TaskChuteDataFetcher;
@@ -25,10 +31,18 @@ export class CLI {
     this.fetcher = new TaskChuteDataFetcher(fetcherOptions);
   }
 
+  /**
+   * 利用可能なコマンドのリストを取得する
+   * @returns コマンド名の配列
+   */
   getAvailableCommands(): string[] {
     return ["login", "fetch", "status", "check-login", "stats", "save-html"];
   }
 
+  /**
+   * ヘルプメッセージを取得する
+   * @returns ヘルプメッセージ文字列
+   */
   getHelpMessage(): string {
     return `
 TaskChute CLI - TaskChute Cloudとの連携ツール
@@ -63,6 +77,11 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 `;
   }
 
+  /**
+   * CLIを実行する
+   * @param args コマンドライン引数
+   * @returns CLIの実行結果
+   */
   async run(args: string[]): Promise<CLIResult> {
     if (args.includes("--help") || args.includes("-h")) {
       console.log(this.getHelpMessage());
@@ -94,6 +113,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     }
   }
 
+  /**
+   * コマンドライン引数をパースしてオプションオブジェクトを生成する
+   * @param args コマンドライン引数の配列
+   * @returns パースされたオプションオブジェクト
+   * @private
+   */
   private parseOptions(args: string[]): Record<string, any> {
     const options: Record<string, any> = {};
     
@@ -116,6 +141,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     return options;
   }
 
+  /**
+   * ログイン処理をハンドルする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
   private async handleLogin(options: Record<string, any>): Promise<CLIResult> {
     try {
       console.log("ブラウザを起動します。TaskChute Cloudにログインしてください...");
@@ -147,6 +178,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     }
   }
 
+  /**
+   * ログイン状態の確認処理をハンドルする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
   private async handleCheckLogin(options: Record<string, any>): Promise<CLIResult> {
     try {
       console.log("TaskChute Cloudへのログイン状態を確認しています...");
@@ -185,6 +222,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     }
   }
 
+  /**
+   * タスク統計情報の取得処理をハンドルする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
   private async handleStats(options: Record<string, any>): Promise<CLIResult> {
     try {
       await this.fetcher.navigateToTaskChute();
@@ -216,6 +259,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     }
   }
 
+  /**
+   * HTML保存処理をハンドルする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
   private async handleSaveHtml(options: Record<string, any>): Promise<CLIResult> {
     try {
       if (!options.output) {
@@ -252,6 +301,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     }
   }
 
+  /**
+   * データ取得処理をハンドルする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
   private async handleFetch(options: Record<string, any>): Promise<CLIResult> {
     console.log("[CLI] handleFetch: 開始");
     try {
@@ -324,6 +379,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     }
   }
 
+  /**
+   * ステータス確認処理をハンドルする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
   private async handleStatus(options: Record<string, any>): Promise<CLIResult> {
     try {
       const sessionStatus = await this.auth.getSessionStatus();

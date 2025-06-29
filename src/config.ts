@@ -3,6 +3,9 @@ import { join } from "std/path/mod.ts";
 import { LoginCredentials } from "./auth.ts";
 import { FetcherOptions } from "./fetcher.ts";
 
+/**
+ * 設定オブジェクトのインターフェース
+ */
 export interface Config {
   auth: LoginCredentials;
   fetcher: FetcherOptions;
@@ -13,6 +16,9 @@ export interface Config {
   };
 }
 
+/**
+ * 設定を管理するクラス
+ */
 export class ConfigManager {
   private configPath: string;
   private defaultConfig: Config;
@@ -39,6 +45,10 @@ export class ConfigManager {
     };
   }
 
+  /**
+   * 設定をファイルから読み込む
+   * @returns 読み込んだ設定オブジェクト
+   */
   async loadConfig(): Promise<Config> {
     try {
       const configJson = await Deno.readTextFile(this.configPath);
@@ -52,6 +62,10 @@ export class ConfigManager {
     }
   }
 
+  /**
+   * 設定をファイルに保存する
+   * @param config 保存する設定オブジェクト
+   */
   async saveConfig(config: Partial<Config>): Promise<void> {
     try {
       const currentConfig = await this.loadConfig();
@@ -65,21 +79,38 @@ export class ConfigManager {
     }
   }
 
+  /**
+   * 認証設定を取得する
+   * @returns 認証設定
+   */
   getAuthConfig(): LoginCredentials {
     const config = this.getConfigSync();
     return config.auth;
   }
 
+  /**
+   * Fetcherのオプションを取得する
+   * @returns Fetcherのオプション
+   */
   getFetcherOptions(): FetcherOptions {
     const config = this.getConfigSync();
     return config.fetcher;
   }
 
+  /**
+   * 一般設定を取得する
+   * @returns 一般設定
+   */
   getGeneralConfig(): Config["general"] {
     const config = this.getConfigSync();
     return config.general;
   }
 
+  /**
+   * 同期的に設定を取得する（主に環境変数を反映させるため）
+   * @returns 設定オブジェクト
+   * @private
+   */
   private getConfigSync(): Config {
     // 環境変数から設定を取得（実行時に毎回チェック）
     return {
@@ -102,6 +133,13 @@ export class ConfigManager {
     };
   }
 
+  /**
+   * デフォルト設定とユーザー設定をマージする
+   * @param defaultConfig デフォルト設定
+   * @param userConfig ユーザー設定
+   * @returns マージされた設定オブジェクト
+   * @private
+   */
   private mergeConfig(defaultConfig: Config, userConfig: Partial<Config>): Config {
     return {
       auth: { ...defaultConfig.auth, ...userConfig.auth },
@@ -110,10 +148,17 @@ export class ConfigManager {
     };
   }
 
+  /**
+   * デフォルトの設定ファイルを作成する
+   */
   async createDefaultConfig(): Promise<void> {
     await this.saveConfig(this.defaultConfig);
   }
 
+  /**
+   * 設定を検証する
+   * @returns 検証結果
+   */
   async validateConfig(): Promise<{ valid: boolean; errors: string[] }> {
     const config = await this.loadConfig();
     const errors: string[] = [];
@@ -151,15 +196,28 @@ export class ConfigManager {
     };
   }
 
+  /**
+   * メールアドレスの形式が有効かチェックする
+   * @param email メールアドレス
+   * @returns 有効な場合はtrue、そうでない場合はfalse
+   * @private
+   */
   private isValidEmail(email: string): boolean {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
   }
 
+  /**
+   * 設定ファイルのパスを取得する
+   * @returns 設定ファイルのパス
+   */
   getConfigPath(): string {
     return this.configPath;
   }
 
+  /**
+   * 設定ファイルをリセット（削除）する
+   */
   async resetConfig(): Promise<void> {
     try {
       await Deno.remove(this.configPath);
@@ -168,11 +226,19 @@ export class ConfigManager {
     }
   }
 
+  /**
+   * 現在の設定をエクスポートする
+   * @returns 設定のJSON文字列
+   */
   async exportConfig(): Promise<string> {
     const config = await this.loadConfig();
     return JSON.stringify(config, null, 2);
   }
 
+  /**
+   * 設定をインポートする
+   * @param configJson インポートする設定のJSON文字列
+   */
   async importConfig(configJson: string): Promise<void> {
     try {
       const config = JSON.parse(configJson);
@@ -182,6 +248,9 @@ export class ConfigManager {
     }
   }
 
+  /**
+   * 現在の設定内容をコンソールに出力する
+   */
   printCurrentConfig(): void {
     const config = this.getConfigSync();
     
