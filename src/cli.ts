@@ -11,6 +11,7 @@ export interface CLIResult {
   command?: string;
   options?: Record<string, any>;
   error?: string;
+  data?: any;
 }
 
 /**
@@ -36,7 +37,7 @@ export class CLI {
    * @returns コマンド名の配列
    */
   getAvailableCommands(): string[] {
-    return ["login", "fetch", "status", "check-login", "stats", "save-html"];
+    return ["login", "fetch", "status", "check-login", "stats", "save-html", "csv-test", "csv-download"];
   }
 
   /**
@@ -57,6 +58,8 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   check-login              TaskChute Cloudへのログイン状態を確認します
   stats                    今日のタスクの統計情報を取得します
   save-html <file>         現在のページのHTMLを保存します
+  csv-test                 CSVエクスポート機能をテストします
+  csv-download             CSVファイルをダウンロードします
 
 オプション:
   --headless              ヘッドレスモードでブラウザを起動
@@ -74,6 +77,8 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   taskchute-cli check-login
   taskchute-cli stats
   taskchute-cli save-html ./page.html
+  taskchute-cli csv-test
+  taskchute-cli csv-download
 `;
   }
 
@@ -108,6 +113,10 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         return await this.handleStats(options);
       case "save-html":
         return await this.handleSaveHtml(options);
+      case "csv-test":
+        return await this.handleCSVTest(options);
+      case "csv-download":
+        return await this.handleCSVDownload(options);
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -298,6 +307,97 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         command: "save-html",
         error: (error as Error).message,
       };
+    }
+  }
+
+  /**
+   * CSVエクスポート機能をテストする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
+  private async handleCSVTest(options: Record<string, any>): Promise<CLIResult> {
+    try {
+      // デバッグ用にheadlessモードを無効化
+      this.fetcher.updateOptions({ headless: false });
+      
+      // ブラウザを起動
+      const browserResult = await this.fetcher.launchBrowser();
+      if (!browserResult.success) {
+        return { success: false, command: "csv-test", error: browserResult.error };
+      }
+      
+      console.log("CSVエクスポートページをテスト中...");
+
+      const result = await this.fetcher.getTaskDataFromCSV();
+      if (!result.success) {
+        return {
+          success: false,
+          command: "csv-test",
+          error: result.error,
+        };
+      }
+
+      console.log("CSVエクスポートページの確認が完了しました。");
+      console.log("ブラウザを10秒間開いたままにします。確認後に手動で閉じてください。");
+      
+      // デバッグ用に少し待機
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
+      return { success: true, command: "csv-test", options };
+    } catch (error) {
+      return {
+        success: false,
+        command: "csv-test",
+        error: (error as Error).message,
+      };
+    } finally {
+      // クリーンアップ
+      await this.fetcher.cleanup();
+    }
+  }
+
+  /**
+   * CSVダウンロードを実行する
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
+  private async handleCSVDownload(options: Record<string, any>): Promise<CLIResult> {
+    try {
+      // ブラウザを起動
+      const browserResult = await this.fetcher.launchBrowser();
+      if (!browserResult.success) {
+        return { success: false, command: "csv-download", error: browserResult.error };
+      }
+      
+      console.log("TaskChuteからCSVファイルをダウンロード中...");
+
+      const result = await this.fetcher.getTaskDataFromCSV();
+      if (!result.success) {
+        return {
+          success: false,
+          command: "csv-download",
+          error: result.error,
+        };
+      }
+
+      if (result.downloadPath) {
+        console.log(`CSVファイルのダウンロードが完了しました: ${result.downloadPath}`);
+      } else {
+        console.log("CSVダウンロード処理が完了しました。");
+      }
+
+      return { success: true, command: "csv-download", options, data: { downloadPath: result.downloadPath } };
+    } catch (error) {
+      return {
+        success: false,
+        command: "csv-download",
+        error: (error as Error).message,
+      };
+    } finally {
+      // クリーンアップ
+      await this.fetcher.cleanup();
     }
   }
 

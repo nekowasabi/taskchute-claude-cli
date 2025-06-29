@@ -39,6 +39,7 @@ export interface FetchResult<T = any> {
   html?: string;
   tasks?: TaskData[];
   error?: string;
+  downloadPath?: string;
 }
 
 /**
@@ -82,13 +83,16 @@ export class TaskChuteDataFetcher {
    * @param options Fetcherのオプション
    */
   constructor(options: FetcherOptions = {}) {
+    const defaultUserDataDir = join(Deno.env.get("HOME") || ".", ".taskchute", "playwright");
     this.options = {
       headless: options.headless ?? true,
       browser: options.browser ?? "chromium",
       timeout: options.timeout ?? 30000,
       viewport: options.viewport ?? { width: 1920, height: 1080 },
-      userDataDir: options.userDataDir ?? join(Deno.env.get("HOME") || ".", ".taskchute", "playwright")
+      userDataDir: options.userDataDir ?? defaultUserDataDir
     };
+    
+    console.log(`[Fetcher] ユーザーデータディレクトリ: ${this.options.userDataDir}`);
   }
 
   /**
@@ -135,6 +139,11 @@ export class TaskChuteDataFetcher {
       }
 
       if (this.options.userDataDir) {
+        console.log(`[Fetcher] launchPersistentContextを使用: ${this.options.userDataDir}`);
+        
+        // ディレクトリが存在しない場合は作成
+        await ensureDir(this.options.userDataDir);
+        
         this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
           headless: this.options.headless,
           timeout: this.options.timeout,
@@ -142,6 +151,8 @@ export class TaskChuteDataFetcher {
         });
         this.browser = this.context.browser();
         this.page = this.context.pages()[0] || await this.context.newPage();
+        
+        console.log(`[Fetcher] 永続化コンテキスト作成完了。既存ページ数: ${this.context.pages().length}`);
       } else {
         this.browser = await browserLauncher.launch({
           headless: this.options.headless,
@@ -222,12 +233,18 @@ export class TaskChuteDataFetcher {
    */
   async isUserLoggedIn(): Promise<boolean> {
     if (!this.page) {
+      console.log(`[Fetcher] ログイン確認: pageがnull`);
       return false;
     }
     try {
+      const currentUrl = this.page.url();
+      console.log(`[Fetcher] ログイン確認: 現在のURL = ${currentUrl}`);
+      
       await this.page.waitForSelector('header', { timeout: 5000 });
+      console.log(`[Fetcher] ログイン確認: headerセレクタが見つかりました`);
       return true;
     } catch (error) {
+      console.log(`[Fetcher] ログイン確認: headerセレクタが見つかりません: ${error}`);
       return false;
     }
   }
@@ -349,409 +366,426 @@ export class TaskChuteDataFetcher {
   }
 
   /**
+   * CSVエクスポート機能を使用してタスクデータを取得する
+   * @returns フェッチ結果
+   */
+  async getTaskDataFromCSV(): Promise<FetchResult<TaskData[]>> {
+    if (!this.page) {
+      const browserResult = await this.launchBrowser();
+      if (!browserResult.success) {
+        return { success: false, error: browserResult.error };
+      }
+    }
+
+    try {
+      // Step 1: TaskChuteページにアクセスしてログイン確認
+      console.log("Step 1: TaskChuteページでログイン確認...");
+      await this.page!.goto("https://taskchute.cloud/taskchute", {
+        waitUntil: "networkidle",
+        timeout: this.options.timeout
+      });
+      
+      await this.page!.waitForTimeout(2000);
+      console.log("TaskChuteページのURL:", this.page!.url());
+      
+      // ログイン状況を確認
+      const isLoggedIn = await this.isUserLoggedIn();
+      console.log("ログイン状況:", isLoggedIn);
+      
+      if (!isLoggedIn) {
+        return { success: false, error: "ログインが必要です。先に 'taskchute-cli login' を実行してください。" };
+      }
+
+      // Step 2: CSVエクスポートページに移動
+      console.log("Step 2: CSVエクスポートページに移動中...");
+      await this.page!.goto("https://taskchute.cloud/export/csv-export", {
+        waitUntil: "networkidle",
+        timeout: this.options.timeout
+      });
+
+      // ページ読み込み待機
+      await this.page!.waitForLoadState('networkidle');
+      await this.page!.waitForTimeout(3000);
+
+      const currentUrl = this.page!.url();
+      console.log("CSVエクスポートページのURL:", currentUrl);
+
+      // リダイレクトされた場合の確認
+      if (currentUrl.includes('/login') || currentUrl.includes('/auth')) {
+        return { success: false, error: "ログインページにリダイレクトされました。認証が必要です。" };
+      }
+
+      // Step 3: ページ構造の分析とデバッグ情報の保存
+      console.log("Step 3: ページ構造を分析中...");
+      
+      // スクリーンショットを撮影
+      await this.page!.screenshot({ path: 'tmp/claude/csv-export-page.png', fullPage: true });
+      console.log("✓ スクリーンショットを保存しました");
+
+      // HTMLを保存
+      const csvPageHtml = await this.page!.content();
+      await this.saveHTMLToFile(csvPageHtml, 'tmp/claude/csv-export-page.html');
+      console.log("✓ HTMLファイルを保存しました");
+
+      // ページタイトルを確認
+      const title = await this.page!.title();
+      console.log(`ページタイトル: "${title}"`);
+
+      // Step 4: エクスポート関連要素の検索
+      console.log("Step 4: エクスポート要素を検索中...");
+      
+      // より幅広い要素を検索
+      const allInteractiveElements = await this.page!.locator(
+        'button, input[type="submit"], input[type="button"], a, form, [role="button"], [data-testid], [onclick]'
+      ).all();
+      
+      console.log(`見つかった対話的要素数: ${allInteractiveElements.length}`);
+
+      const exportRelatedElements = [];
+      
+      for (let i = 0; i < allInteractiveElements.length; i++) {
+        const element = allInteractiveElements[i];
+        const text = (await element.textContent() || '').trim();
+        const tagName = await element.evaluate(el => el.tagName);
+        const href = await element.getAttribute('href');
+        const type = await element.getAttribute('type');
+        const dataTestId = await element.getAttribute('data-testid');
+        const onClick = await element.getAttribute('onclick');
+        const className = await element.getAttribute('class');
+        
+        // CSVやエクスポートに関連する要素を特定
+        const isExportRelated = text.toLowerCase().includes('csv') ||
+                               text.toLowerCase().includes('export') ||
+                               text.toLowerCase().includes('ダウンロード') ||
+                               text.toLowerCase().includes('出力') ||
+                               href?.includes('csv') ||
+                               href?.includes('export') ||
+                               dataTestId?.includes('export') ||
+                               dataTestId?.includes('csv');
+        
+        if (isExportRelated || i < 10) { // 最初の10個は全て表示
+          console.log(`要素${i}: ${tagName}`);
+          console.log(`  テキスト: "${text}"`);
+          console.log(`  href: "${href}"`);
+          console.log(`  type: "${type}"`);
+          console.log(`  data-testid: "${dataTestId}"`);
+          console.log(`  class: "${className}"`);
+          console.log(`  onclick: "${onClick}"`);
+          console.log('---');
+          
+          if (isExportRelated) {
+            exportRelatedElements.push({ element, text, href, type, dataTestId });
+          }
+        }
+      }
+
+      console.log(`エクスポート関連要素数: ${exportRelatedElements.length}`);
+
+      // Step 5: 日付範囲フォームの確認と入力
+      console.log("Step 5: 日付範囲フォームを確認中...");
+      
+      // より広範囲の日付入力フィールドを検索
+      const allInputs = await this.page!.locator('input').all();
+      console.log(`全入力フィールド数: ${allInputs.length}`);
+      
+      const dateInputs = [];
+      for (let i = 0; i < allInputs.length; i++) {
+        const input = allInputs[i];
+        const placeholder = await input.getAttribute('placeholder');
+        const value = await input.getAttribute('value');
+        const type = await input.getAttribute('type');
+        
+        console.log(`入力フィールド${i}: type="${type}", placeholder="${placeholder}", value="${value}"`);
+        
+        // YYYY/MM/DD形式のプレースホルダーや日付関連の入力フィールドを特定
+        if (placeholder?.includes('YYYY') || placeholder?.includes('MM') || placeholder?.includes('DD') ||
+            type === 'date' || placeholder?.includes('/')) {
+          dateInputs.push({ input, placeholder, value, type, index: i });
+        }
+      }
+      
+      console.log(`日付入力フィールド数: ${dateInputs.length}`);
+      
+      if (dateInputs.length >= 2) {
+        // 指定された日付（20250629）を設定
+        const targetDate = "20250629";
+        
+        console.log(`設定する日付: ${targetDate}`);
+        
+        try {
+          // 開始日を入力（最初の日付フィールド）
+          console.log("開始日を入力中...");
+          await dateInputs[0].input.click();
+          await dateInputs[0].input.selectAll();
+          await dateInputs[0].input.type(targetDate);
+          await this.page!.waitForTimeout(1000);
+          
+          // 終了日を入力（2番目の日付フィールド）  
+          console.log("終了日を入力中...");
+          await dateInputs[1].input.click();
+          await dateInputs[1].input.selectAll();
+          await dateInputs[1].input.type(targetDate);
+          await this.page!.waitForTimeout(2000); // 少し長めに待機
+          
+          console.log("日付入力完了");
+          
+          // 入力値を確認
+          const startValue = await dateInputs[0].input.inputValue();
+          const endValue = await dateInputs[1].input.inputValue();
+          console.log(`入力確認 - 開始日: "${startValue}", 終了日: "${endValue}"`);
+          
+          // ダウンロードボタンが有効になるまで待機
+          console.log("ダウンロードボタンが有効になるまで待機中...");
+          try {
+            await this.page!.waitForSelector('button:has-text("ダウンロード"):not(.Mui-disabled)', { timeout: 10000 });
+            console.log("ダウンロードボタンが有効になりました");
+          } catch (error) {
+            console.log("ダウンロードボタンの有効化待機がタイムアウトしました:", error);
+          }
+          
+        } catch (error) {
+          console.error("日付入力エラー:", error);
+        }
+      }
+
+      // Step 6: ダウンロードボタンをクリック
+      console.log("Step 6: ダウンロードボタンをクリック中...");
+      
+      // ダウンロードボタンを再検索（状態が変わった可能性があるため）
+      const downloadButtons = await this.page!.locator('button:has-text("ダウンロード")').all();
+      console.log(`ダウンロードボタン数: ${downloadButtons.length}`);
+      
+      if (downloadButtons.length > 0) {
+        // ボタンが有効かどうかを確認
+        const isDisabled = await downloadButtons[0].evaluate(el => el.classList.contains('Mui-disabled'));
+        console.log(`ダウンロードボタンの状態: ${isDisabled ? '無効' : '有効'}`);
+        
+        if (isDisabled) {
+          console.log("ダウンロードボタンが無効状態です。強制的にクリックを試行します。");
+        }
+        
+        try {
+          console.log("ダウンロードボタンをクリック中...");
+          
+          // ダウンロード待機の準備
+          const downloadPromise = this.page!.waitForEvent('download', { timeout: 30000 });
+          
+          // ボタンをクリック（強制的に）
+          await downloadButtons[0].click({ force: true });
+          
+          // ダウンロード完了を待機
+          const download = await downloadPromise;
+          console.log(`ダウンロード開始: ${download.suggestedFilename()}`);
+          
+          // ダウンロードファイルを保存
+          const downloadPath = `tmp/claude/${download.suggestedFilename() || 'taskchute-export.csv'}`;
+          await download.saveAs(downloadPath);
+          console.log(`CSVファイルを保存: ${downloadPath}`);
+          
+          return { success: true, tasks: [], downloadPath };
+          
+        } catch (error) {
+          console.error("ダウンロードエラー:", error);
+          return { success: false, error: `ダウンロードに失敗しました: ${error}` };
+        }
+      } else {
+        console.log("ダウンロードボタンが見つかりません");
+        return { success: false, error: "ダウンロードボタンが見つかりません" };
+      }
+
+      return { success: true, tasks: [] };
+
+    } catch (error) {
+      console.error("CSVエクスポートページでエラー:", error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
    * タスクデータを取得する
    * @param mockOptions モックオプション
    * @returns フェッチ結果
    */
   async getTaskData(mockOptions: { mock?: boolean } = {}): Promise<FetchResult<TaskData[]>> {
-    console.log("[Fetcher] getTaskData: 開始");
     if (mockOptions.mock) {
-      // Mock implementation...
       return { success: true, tasks: [] };
     }
 
     if (!this.page) {
-      console.error("[Fetcher] getTaskData: pageオブジェクトがありません");
       return { success: false, error: "No active browser page" };
     }
 
     try {
-      console.log("[Fetcher] getTaskData: 1. rowgroupの待機を開始");
+      // 最初にページが読み込まれるまで待機
+      await this.page.waitForLoadState('networkidle');
       
-      // デバッグ用：現在のページの情報を確認
-      const currentUrl = this.page.url();
-      console.log("[Fetcher] getTaskData: 現在のURL:", currentUrl);
+      // ReactアプリのJavaScript初期化を待機
+      await this.page.waitForTimeout(5000);
       
-      // スクリーンショットを撮る
-      await this.page.screenshot({ path: "debug-before-rowgroup.png", fullPage: true });
-      console.log("[Fetcher] getTaskData: スクリーンショット保存: debug-before-rowgroup.png");
-      
-      // 現在のDOM構造を確認
-      const bodyHtml = await this.page.locator('body').innerHTML();
-      console.log("[Fetcher] getTaskData: body要素の最初の1000文字:", bodyHtml.substring(0, 1000));
-      
-      // より柔軟な待機戦略を使用
-      console.log("[Fetcher] getTaskData: テーブル要素の待機を開始");
-      
-      // 複数のセレクタを試す
-      const selectors = [
-        'div[role="rowgroup"]',
-        'div[role="grid"]',
-        'table',
-        '[data-testid="task-table"]',
-        '.task-list',
-        'div[class*="table"]',
-        'div[class*="grid"]'
-      ];
-      
-      let foundElement = null;
-      for (const selector of selectors) {
-        try {
-          console.log(`[Fetcher] getTaskData: ${selector} を試行中`);
-          await this.page.waitForSelector(selector, { timeout: 5000 });
-          foundElement = selector;
-          console.log(`[Fetcher] getTaskData: ${selector} が見つかりました`);
-          break;
-        } catch (error) {
-          console.log(`[Fetcher] getTaskData: ${selector} が見つかりませんでした`);
-        }
-      }
-      
-      if (!foundElement) {
-        // 最後の手段として長時間待機
-        console.log("[Fetcher] getTaskData: 最後の手段でrowgroupを60秒間待機");
-        await this.page.waitForSelector('div[role="rowgroup"]', { timeout: 60000 });
-      }
-      console.log("[Fetcher] getTaskData: 1. rowgroupの待機が完了");
-
-      console.log("[Fetcher] getTaskData: 2. スケルトンが消えるのを待機開始");
+      // スケルトンローディングが完了するまで待機
       try {
-        // 最初のスケルトン要素だけを待機
-        await this.page.locator('span.MuiSkeleton-root').first().waitFor({ state: 'hidden', timeout: this.options.timeout });
-        console.log("[Fetcher] getTaskData: 2. スケルトンが消えるのを待機完了");
-      } catch (error) {
-        console.log("[Fetcher] getTaskData: スケルトン待機をスキップして続行");
+        await this.page.locator('span.MuiSkeleton-root').first().waitFor({ state: 'hidden', timeout: 30000 });
+      } catch {
         // スケルトン待機が失敗してもデータ取得を試行
       }
       
-      console.log("[Fetcher] getTaskData: 3. 最終待機を開始");
-      await this.page.waitForTimeout(2000);
-      console.log("[Fetcher] getTaskData: 3. 最終待機が完了");
+      // 実際のタスクデータがレンダリングされるまで待機
+      try {
+        await this.page.locator('div[role="rowgroup"] > div.MuiStack-root, div.MuiStack-root.my-csffzd').first().waitFor({ timeout: 20000 });
+      } catch {
+        // タスクデータ待機が失敗してもデータ取得を試行
+      }
+      
+      // 追加の安全な待機時間
+      await this.page.waitForTimeout(3000);
 
-      console.log("[Fetcher] getTaskData: 4. データ抽出を開始");
+      const tasks: TaskData[] = [];
       
-      // DOM構造を詳しく調べる
-      const pageContent = await this.page.content();
-      console.log("[Fetcher] getTaskData: ページのHTMLを確認中");
+      // Issue #3の方針に基づく堅牢な実装
       
-      // HTMLを一時ファイルに保存してデバッグ
-      await Deno.writeTextFile("debug-page-content.html", pageContent);
-      console.log("[Fetcher] getTaskData: HTMLをdebug-page-content.htmlに保存しました");
-      
-      // 複数のセレクタでタスク行を検索
-      const possibleSelectors = [
-        'div[role="row"]',
-        'tr',
-        '[data-testid*="task"]', 
-        'li[class*="task"]',
-        'div[class*="task"]',
-        'div[class*="item"]',
-        'div[class*="row"]'
+      // より広範囲のセレクタでタスク行要素の検索を試行
+      let taskRows: any[] = [];
+      const rowSelectors = [
+        'div[role="rowgroup"] > div.MuiStack-root',
+        'div[role="grid"] > div.MuiStack-root', 
+        'div.MuiStack-root.my-csffzd',
+        'div.MuiStack-root[class*="my-"]',
+        'div[data-testid*="task"]',
+        'div[class*="task"]'
       ];
       
-      let rows: any[] = [];
-      let usedSelector = '';
-      
-      for (const selector of possibleSelectors) {
+      for (const selector of rowSelectors) {
         try {
-          const foundRows = await this.page.locator(selector).all();
-          if (foundRows.length > 0) {
-            rows = foundRows;
-            usedSelector = selector;
-            console.log(`[Fetcher] getTaskData: ${selector} で ${foundRows.length}行見つかりました`);
+          const rows = await this.page.locator(selector).all();
+          if (rows.length > taskRows.length) {
+            taskRows = rows;
             break;
           }
         } catch (error) {
-          console.log(`[Fetcher] getTaskData: ${selector} の検索に失敗`);
+          continue;
         }
       }
       
-      console.log(`[Fetcher] getTaskData: 最終的に${usedSelector}で${rows.length}行見つかりました`);
-      
-      // 新しいアプローチ：ページから全てのテキストを抽出してタスクを探す
-      console.log("[Fetcher] getTaskData: テキストベースの抽出を開始");
-      
-      const tasks: TaskData[] = [];
-      
-      // ページから全体のテキストを取得
-      const allText = await this.page.locator('body').textContent();
-      console.log("[Fetcher] getTaskData: ページテキストを取得、長さ:", allText?.length);
-      
-      let taskIndex = 0;
-      
-      // より具体的な方法：指定されたMuiStackクラス以下のタスクを抽出
-      const taskStackElements = await this.page.locator('div.MuiStack-root.my-csffzd').all();
-      console.log(`[Fetcher] getTaskData: MuiStack-root my-csffzd で${taskStackElements.length}個の要素が見つかりました`);
-      
-      // 各MuiStackコンテナの内容を確認
-      for (let i = 0; i < Math.min(taskStackElements.length, 3); i++) {
-        try {
-          const stackText = await taskStackElements[i].textContent();
-          console.log(`[Fetcher] getTaskData: MuiStack[${i}] 内容: ${stackText?.substring(0, 200)}...`);
-        } catch (error) {
-          console.log(`[Fetcher] getTaskData: MuiStack[${i}] 内容取得エラー: ${error}`);
-        }
+      // MuiStackベースの抽出をフォールバックとして使用
+      if (taskRows.length === 0) {
+        taskRows = await this.page.locator('div.MuiStack-root.my-csffzd').all();
       }
       
-      // より具体的な方法：新しいタスク形式でvisible elementsから直接タスクを抽出
-      // 実際の形式: "23:59 07:59 瞑想しておやすみなさい（ ；´ワ ｀；） 00:00 07:10"
-      const taskElements = await this.page.locator('text=/\\d{1,2}:\\d{2}\\s+\\d{1,2}:\\d{2}\\s+\\S+/').all();
-      console.log(`[Fetcher] getTaskData: 新タスクパターンで${taskElements.length}個の要素が見つかりました`);
-      
-      // 古いハイフン形式のフォールバック対応も追加
-      const oldFormatElements = await this.page.locator('text=/\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}/').all();
-      console.log(`[Fetcher] getTaskData: 旧形式パターンで${oldFormatElements.length}個の要素が見つかりました`);
-      
-      // MuiStack内の新形式タスクを優先的に探す（セレクタ構文を修正）
-      const stackTaskElements = await this.page.locator('div.MuiStack-root.my-csffzd').locator('text=/\\d{1,2}:\\d{2}\\s+\\d{1,2}:\\d{2}\\s+\\S+/').all();
-      console.log(`[Fetcher] getTaskData: MuiStack内新形式で${stackTaskElements.length}個の要素が見つかりました`);
-      
-      // MuiStack内にタスクがある場合はそれを優先処理
-      const targetElements = stackTaskElements.length > 0 ? stackTaskElements : taskElements;
-      console.log(`[Fetcher] getTaskData: 処理対象要素数: ${targetElements.length} (MuiStack優先: ${stackTaskElements.length > 0})`);
-      
-      for (const timeElement of targetElements) {
+      for (const row of taskRows) {
         try {
-          const timeText = await timeElement.textContent();
-          console.log(`[Fetcher] getTaskData: 時間要素: ${timeText}`);
+          // 行内のボックス要素を取得
+          const columns = await row.locator(':scope > .MuiBox-root').all();
           
-          // 新しいタスク形式を解析: "HH:MM HH:MM タスク名 HH:MM HH:MM"
-          const taskPattern = /(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})\s+(.+?)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})/;
-          const taskMatch = timeText?.match(taskPattern);
-          if (taskMatch) {
-            const [, startTime, endTime, taskName, estimatedTime, actualTime] = taskMatch;
-            console.log(`[Fetcher] getTaskData: タスク${taskIndex}の詳細解析を開始: ${startTime} ${endTime} "${taskName}" ${estimatedTime} ${actualTime}`);
+          if (columns.length >= 6) {
+            // 列インデックスベースでの抽出を試行
+            const startTime = (await columns[1].textContent() || '').trim();
+            const endTime = (await columns[2].textContent() || '').trim();
+            let title = (await columns[3].textContent() || '').trim();
+            const estimatedTime = (await columns[4].textContent() || '').trim();
+            const actualTime = (await columns[5].textContent() || '').trim();
             
-            // 新形式では既にタスク名と時間情報が抽出済み
-            let detailedTitle = taskName.trim();
-            let taskStatus = 'unknown';
-            let category = '';
+            // デバッグ用：処理前のタスク名を記録
+            const originalTitle = title;
             
-            // タスク名のクリーンアップ
-            if (detailedTitle) {
-              // 前後の余分な文字を削除
-              detailedTitle = detailedTitle.replace(/^[\d\s\-\/]+|[\d\s\-\/]+$/g, '').trim();
+            // タスク名の精製処理
+            title = title
+              .replace(/^(枠:|と|:--|--:|・)+/, '') // 不要な接頭辞を削除
+              .replace(/(枠:|と|:--|--:|・)+$/, '') // 不要な接尾辞を削除  
+              .replace(/\s*:--\s*/g, '') // 「:--」を削除
+              .replace(/^\s*・\s*/, '') // 先頭の「・」を削除
+              .replace(/^枠$/, '') // 単独の「枠」を削除
+              .replace(/^と$/, '') // 単独の「と」を削除
+              .trim();
               
-              // 特殊文字や絵文字を含む場合はそのまま保持
-              if (detailedTitle.length === 0) {
-                detailedTitle = `タスク ${startTime}-${endTime}`;
-              }
+            // デバッグ用：問題のあるタスク名を特定
+            if (originalTitle === '枠:--' || originalTitle === 'と') {
+              console.log(`問題のタスク: "${originalTitle}" -> "${title}"`);
             }
             
-            // タスクステータスの推定
-            if (detailedTitle.includes('完了') || detailedTitle.includes('終了')) {
-              taskStatus = 'completed';
-            } else if (detailedTitle.includes('進行中') || detailedTitle.includes('実行中')) {
-              taskStatus = 'in-progress';
-            } else if (detailedTitle.includes('予定') || detailedTitle.includes('未開始')) {
-              taskStatus = 'pending';
-            } else {
-              // 現在時刻と比較してステータスを推定（簡易版）
-              taskStatus = 'completed'; // デフォルト
-            }
+            // ステータス判定
+            let status = 'unknown';
+            try {
+              const svgElement = await columns[0].locator('svg').first();
+              const testId = await svgElement.getAttribute('data-testid');
+              status = testId === 'CheckIcon' ? 'completed' : 
+                      testId === 'PlayArrowIcon' ? 'in-progress' : 
+                      testId === 'PauseIcon' ? 'paused' : 'unknown';
+            } catch {}
             
-            tasks.push({
-              id: `task-${taskIndex++}`,
-              title: detailedTitle,
-              status: taskStatus,
-              startTime: startTime,
-              endTime: endTime,
-              category: category,
-              estimatedTime: estimatedTime,
-              actualTime: actualTime,
-              description: '',
-            });
+            // タスクの有効性を判定（より厳密なチェック）
+            const isValidTask = title && 
+                               title.length > 1 && // 最低2文字以上
+                               title.length < 200 &&
+                               startTime && 
+                               endTime && 
+                               !title.includes('終了予定') && 
+                               !title.includes('Start期間') &&
+                               !title.includes('ヘッダー') &&
+                               !title.includes('合計') &&
+                               originalTitle !== '枠:--' && // 元の「枠:--」を除外
+                               originalTitle !== 'と' && // 元の「と」を除外
+                               !/^[:・\-\s]+$/.test(title) && // 記号のみのタイトルを除外
+                               !/^(枠|と|・)+$/.test(title); // 不要文字のみを除外
             
-            console.log(`[Fetcher] getTaskData: タスク${taskIndex-1}の詳細データを保存しました: "${detailedTitle}" (${startTime}-${endTime})`);
-          }
-        } catch (error) {
-          console.log(`[Fetcher] getTaskData: 要素処理エラー: ${error}`);
-        }
-      }
-      
-      // MuiStackから直接タスクを抽出する処理を追加
-      if (tasks.length === 0 && taskStackElements.length > 0) {
-        console.log(`[Fetcher] getTaskData: 通常パターンでタスクが見つからないため、MuiStackから直接抽出を開始`);
-        
-        for (const stackElement of taskStackElements) {
-          try {
-            const stackText = await stackElement.textContent();
-            console.log(`[Fetcher] getTaskData: MuiStack要素: ${stackText?.substring(0, 300)}...`);
-            
-            // MuiStack内の全ての時間パターンを探す
-            const timeMatches = stackText?.match(/\d{1,2}:\d{2}/g);
-            if (timeMatches && timeMatches.length >= 2) {
-              // 基本パターン: 開始時間 終了時間 タスク名 見積時間 実時間
-              if (timeMatches.length >= 4) {
-                const [startTime, endTime, estimatedTime, actualTime] = timeMatches;
-                
-                // タスク名を抽出（時間以外のテキスト部分）
-                let taskName = stackText || '';
-                // 時間情報を除去してタスク名を抽出
-                taskName = taskName.replace(/\d{1,2}:\d{2}/g, '').replace(/\s+/g, ' ').trim();
-                // 数字のみの部分を除去
-                taskName = taskName.replace(/^\d+|\d+$/g, '').trim();
-                // --:-- を除去
-                taskName = taskName.replace(/--:--/g, '').trim();
-                
-                // ダッシュボード情報や無効なタスクを除外
-                const isValidTask = taskName.length > 0 && taskName.length < 100 && 
-                                  !taskName.includes('終了予定') && 
-                                  !taskName.includes('現在：') && 
-                                  !taskName.includes('開始遅延見込') && 
-                                  !taskName.includes('タスク数') &&
-                                  !taskName.includes('ABDEFGHI');
-                
-                if (isValidTask) {
-                  tasks.push({
-                    id: `muistack-task-${tasks.length}`,
-                    title: taskName,
-                    status: 'unknown',
-                    startTime: startTime,
-                    endTime: endTime,
-                    category: '',
-                    estimatedTime: estimatedTime,
-                    actualTime: actualTime,
-                    description: '',
-                  });
-                  
-                  console.log(`[Fetcher] getTaskData: MuiStackタスクを追加: "${taskName}" (${startTime}-${endTime})`);
-                } else {
-                  console.log(`[Fetcher] getTaskData: 無効なタスクをスキップ: "${taskName}"`);
-                }
-              }
-            }
-          } catch (error) {
-            console.log(`[Fetcher] getTaskData: MuiStack要素処理エラー: ${error}`);
-          }
-        }
-      }
-      
-      // 新形式で見つからない場合の旧形式フォールバック処理（詳細情報抽出付き）
-      if (tasks.length === 0 && oldFormatElements.length > 0) {
-        console.log(`[Fetcher] getTaskData: 新形式でタスクが見つからないため、旧形式でフォールバック処理を開始`);
-        
-        for (const oldElement of oldFormatElements) {
-          try {
-            const oldTimeText = await oldElement.textContent();
-            console.log(`[Fetcher] getTaskData: 旧形式要素: ${oldTimeText}`);
-            
-            // 基本的なタスク情報を抽出（旧形式）
-            const timeParts = oldTimeText?.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-            if (timeParts) {
-              let detailedTitle = `タスク ${timeParts[1]}-${timeParts[2]}`;
-              let estimatedTime = '';
-              let actualTime = '';
-              let taskStatus = 'unknown';
-              
-              // 周辺のDOM構造から詳細情報を抽出
-              for (let level = 1; level <= 4; level++) {
-                try {
-                  const containerElement = oldElement.locator(`xpath=ancestor::*[contains(@class, "MuiStack") or contains(@class, "MuiBox") or contains(@class, "MuiGrid") or contains(@class, "MuiContainer")][${level}]`);
-                  const containerText = await containerElement.textContent({ timeout: 3000 });
-                  console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} コンテナテキスト: ${containerText?.substring(0, 200)}...`);
-                  
-                  if (!containerText) continue;
-                  
-                  // 1. タスク名を抽出（日本語文字を含むテキスト）
-                  if (detailedTitle.includes('タスク')) {
-                    // 時間の後にある日本語テキストを探す
-                    const afterTimePattern = new RegExp(`${timeParts[1].replace(':', '\\\\:')}\\\\s*-\\\\s*${timeParts[2].replace(':', '\\\\:')}\\\\s*([^\\\\d\\\\n]+?)(?:\\\\s*\\\\d{1,2}:\\\\d{2}|$|\\\\n)`, 'i');
-                    const afterTimeMatch = containerText.match(afterTimePattern);
-                    
-                    if (afterTimeMatch && afterTimeMatch[1]) {
-                      const candidateTitle = afterTimeMatch[1].trim()
-                        .replace(/^[\\/\\d\\s-]+|[\\/\\d\\s-]+$/g, '')
-                        .replace(/\\s+/g, ' ')
-                        .trim();
-                      
-                      if (candidateTitle.length > 0 && candidateTitle.length < 100 && !/^\\d+$/.test(candidateTitle)) {
-                        detailedTitle = candidateTitle;
-                        console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} タイトル抽出成功: ${detailedTitle}`);
-                      }
-                    }
-                    
-                    // 日本語パターンでの抽出
-                    const japanesePattern = /([ひ-ろァ-ヶー一-龯\\（\\）\\；\\´\\`\\ワ\\s]+)/g;
-                    const japaneseMatches = containerText.match(japanesePattern);
-                    
-                    if (japaneseMatches && detailedTitle.includes('タスク')) {
-                      for (const match of japaneseMatches) {
-                        const cleanMatch = match.trim().replace(/^[\\/\\d\\s-]+|[\\/\\d\\s-]+$/g, '');
-                        if (cleanMatch.length > 2 && cleanMatch.length < 80 && 
-                            !cleanMatch.includes('見積') && !cleanMatch.includes('実時間') &&
-                            !cleanMatch.includes('タスク')) {
-                          detailedTitle = cleanMatch;
-                          console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} 日本語タイトル抽出: ${detailedTitle}`);
-                          break;
-                        }
-                      }
-                    }
-                  }
-                  
-                  // 2. 詳細時間情報を抽出
-                  const allTimeMatches = containerText.match(/\\d{1,2}:\\d{2}/g);
-                  if (allTimeMatches && allTimeMatches.length >= 4) {
-                    const startIndex = allTimeMatches.findIndex(time => time === timeParts[1]);
-                    const endIndex = allTimeMatches.findIndex(time => time === timeParts[2]);
-                    
-                    if (startIndex !== -1 && endIndex !== -1) {
-                      // 見積時間と実時間を推定（時間の順序で判定）
-                      const remainingTimes = allTimeMatches.filter((time, idx) => idx !== startIndex && idx !== endIndex);
-                      if (remainingTimes.length >= 2) {
-                        estimatedTime = remainingTimes[0];
-                        actualTime = remainingTimes[1];
-                        console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} 時間情報抽出: 見積=${estimatedTime}, 実時間=${actualTime}`);
-                      }
-                    }
-                  }
-                  
-                  // 十分な情報が得られた場合は停止
-                  if (!detailedTitle.includes('タスク') && (estimatedTime || actualTime)) {
-                    console.log(`[Fetcher] getTaskData: 旧形式 レベル${level}で十分な情報取得、探索終了`);
-                    break;
-                  }
-                  
-                } catch (levelError) {
-                  console.log(`[Fetcher] getTaskData: 旧形式 レベル${level} 解析エラー: ${levelError}`);
-                }
-              }
-              
+            if (isValidTask) {
               tasks.push({
-                id: `fallback-task-${tasks.length}`,
-                title: detailedTitle,
-                status: taskStatus,
-                startTime: timeParts[1],
-                endTime: timeParts[2],
+                id: `task-${tasks.length}`,
+                title: title,
+                status: status,
+                startTime: startTime.replace('--:--', ''),
+                endTime: endTime.replace('--:--', ''),
+                estimatedTime: estimatedTime.replace('--:--', ''),
+                actualTime: actualTime.replace('--:--', ''),
                 category: '',
-                estimatedTime: estimatedTime,
-                actualTime: actualTime,
                 description: '',
               });
-              
-              console.log(`[Fetcher] getTaskData: 旧形式フォールバックタスクを追加: "${detailedTitle}" (${timeParts[1]}-${timeParts[2]})`);
             }
-          } catch (error) {
-            console.log(`[Fetcher] getTaskData: 旧形式要素処理エラー: ${error}`);
+          } else {
+            // フォールバック：MuiStackテキストベース抽出
+            const stackText = await row.textContent();
+            const timeMatches = stackText?.match(/\d{1,2}:\d{2}/g);
+            
+            if (timeMatches && timeMatches.length >= 2) {
+              const startTime = timeMatches[0];
+              const endTime = timeMatches[1];
+              const estimatedTime = timeMatches[2] || '';
+              const actualTime = timeMatches[3] || '';
+              
+              // タスク名抽出（簡略版）
+              let taskName = stackText?.replace(/(\d{1,2}:\d{2}|--:--)/g, ' ')
+                                      .replace(/\s+/g, ' ')
+                                      .replace(/(タグ|プロジェクト|routine|condition|モード)$/, '')
+                                      .trim() || '';
+              
+              if (taskName.length > 0 && taskName.length < 100 &&
+                  !taskName.includes('終了予定') && !taskName.includes('Start期間')) {
+                tasks.push({
+                  id: `task-${tasks.length}`,
+                  title: taskName,
+                  status: 'unknown',
+                  startTime: startTime,
+                  endTime: endTime,
+                  estimatedTime: estimatedTime,
+                  actualTime: actualTime,
+                  category: '',
+                  description: '',
+                });
+              }
+            }
           }
+        } catch (error) {
+          continue;
         }
       }
-      console.log(`[Fetcher] getTaskData: 4. データ抽出が完了。${tasks.length}件のタスクを抽出しました。`);
-
+      
       if (tasks.length === 0) {
-          console.log("[Fetcher] getTaskData: タスクが見つからなかったため、スクリーンショットを保存します。");
-          await this.takeScreenshot('no-tasks-found.png');
-          return { success: false, error: "Data extraction failed: No tasks found on the page. Saved screenshot to no-tasks-found.png" };
+        return { success: false, error: "No tasks found on the page" };
       }
 
       return { success: true, tasks };
 
     } catch (error) {
-      console.error(`[Fetcher] getTaskData: エラー発生 - ${(error as Error).stack}`);
-      await this.takeScreenshot('error-screenshot.png');
       return { success: false, error: (error as Error).message };
-    } finally {
-      console.log("[Fetcher] getTaskData: 終了");
     }
   }
 
