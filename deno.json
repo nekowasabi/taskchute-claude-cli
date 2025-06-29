@@ -3,7 +3,13 @@
   "tasks": {
     "start": "deno run --allow-all src/main.ts",
     "test": "deno test --allow-all",
-    "dev": "deno run --allow-all --watch src/main.ts"
+    "dev": "deno run --allow-all --watch src/main.ts",
+    "login": "deno run --allow-all src/main.ts login",
+    "check-login": "deno run --allow-all src/main.ts check-login",
+    "fetch": "deno run --allow-all src/main.ts fetch",
+    "stats": "deno run --allow-all src/main.ts stats",
+    "save-html": "deno run --allow-all src/main.ts save-html",
+    "build": "deno compile --allow-all --output taskchute-cli src/main.ts"
   },
   "imports": {
     "gunshi": "https://deno.land/x/gunshi@v0.11.0/mod.ts",
@@ -14,7 +20,7 @@
   },
   "compilerOptions": {
     "allowJs": true,
-    "lib": ["deno.window"],
+    "lib": ["deno.window", "dom"],
     "strict": true
   }
 }

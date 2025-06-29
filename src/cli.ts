@@ -26,7 +26,7 @@ export class CLI {
   }
 
   getAvailableCommands(): string[] {
-    return ["login", "fetch", "status"];
+    return ["login", "fetch", "status", "check-login", "stats", "save-html"];
   }
 
   getHelpMessage(): string {
@@ -37,9 +37,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   taskchute-cli <command> [options]
 
 利用可能なコマンド:
-  login                    TaskChute Cloudにログイン（環境変数のメール・パスワードを使用）
+  login                    ブラウザを起動し、手動でログインします
   fetch --output <file>    TaskChuteデータを取得してファイルに保存
   status                   現在のログイン状態を確認
+  check-login              TaskChute Cloudへのログイン状態を確認します
+  stats                    今日のタスクの統計情報を取得します
+  save-html <file>         現在のページのHTMLを保存します
 
 オプション:
   --headless              ヘッドレスモードでブラウザを起動
@@ -54,6 +57,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   taskchute-cli fetch --output ./tasks.html
   taskchute-cli fetch --output ./tasks.json --browser firefox
   taskchute-cli status
+  taskchute-cli check-login
+  taskchute-cli stats
+  taskchute-cli save-html ./page.html
 `;
   }
 
@@ -77,6 +83,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         return await this.handleFetch(options);
       case "status":
         return await this.handleStatus(options);
+      case "check-login":
+        return await this.handleCheckLogin(options);
+      case "stats":
+        return await this.handleStats(options);
+      case "save-html":
+        return await this.handleSaveHtml(options);
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -106,8 +118,39 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
   private async handleLogin(options: Record<string, any>): Promise<CLIResult> {
     try {
-      console.log("TaskChute Cloudへのログインを開始します...");
-      
+      console.log("ブラウザを起動してTaskChute Cloudに手動でログインしてください...");
+
+      // ブラウザの設定を更新
+      this.fetcher.updateOptions({
+        headless: false, // 必ず表示モードで起動
+        ...(options.browser && { browser: options.browser }),
+        ...(options.timeout && { timeout: options.timeout }),
+      });
+
+      // ブラウザを起動してログインページを開く
+      await this.fetcher.launchBrowser();
+      await this.fetcher.navigateToTaskChute();
+
+      console.log("ログイン後、このウィンドウを閉じてください。");
+      console.log("ログイン状態を確認するには、`taskchute-cli check-login` を実行してください。");
+
+      // ユーザーが手動で操作するため、ここでは待機しない
+      // 必要であれば、特定のURLに到達するまで待機するなどの処理を追加可能
+
+      return { success: true, command: "login", options };
+    } catch (error) {
+      return {
+        success: false,
+        command: "login",
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  private async handleCheckLogin(options: Record<string, any>): Promise<CLIResult> {
+    try {
+      console.log("TaskChute Cloudへのログイン状態を確認しています...");
+
       // ブラウザの設定を更新
       if (options.headless !== undefined) {
         this.fetcher.updateOptions({ headless: options.headless });
@@ -115,42 +158,121 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       if (options.browser) {
         this.fetcher.updateOptions({ browser: options.browser });
       }
-      if (options.timeout) {
-        this.fetcher.updateOptions({ timeout: options.timeout });
+
+      const { isLoggedIn, error } = await this.fetcher.checkLoginStatus();
+
+      if (error) {
+        console.log("ログイン状態の確認に失敗しました。");
+        console.log("`taskchute-cli login` を実行して、手動でログインしてください。");
+        return { success: false, command: "check-login", error };
       }
 
-      // 認証情報を取得
-      const credentials = this.auth.getCredentials();
-      
-      // ブラウザを使用してログイン
-      const loginResult = await this.fetcher.performGoogleLogin(credentials);
-
-      if (!loginResult.success) {
-        return { 
-          success: false, 
-          command: "login", 
-          error: `ログインに失敗しました: ${loginResult.error}` 
-        };
+      if (isLoggedIn) {
+        console.log("ログイン済みです。");
+        // ログイン成功時にセッションを更新
+        await this.auth.createSession();
+      } else {
+        console.log("未ログインです。`taskchute-cli login` を実行して、手��でログインしてください。");
       }
 
-      // セッション情報を保存
-      const sessionResult = await this.auth.createSession();
-      if (!sessionResult.success) {
-        return { 
-          success: false, 
-          command: "login", 
-          error: `セッションの作成に失敗しました: ${sessionResult.error}` 
-        };
-      }
-
-      console.log("ログインが完了しました。");
-      return { success: true, command: "login", options };
-
+      return { success: isLoggedIn, command: "check-login" };
     } catch (error) {
-      return { 
-        success: false, 
-        command: "login", 
-        error: (error as Error).message 
+      return {
+        success: false,
+        command: "check-login",
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  private async handleStats(options: Record<string, any>): Promise<CLIResult> {
+    try {
+      let isLoggedIn = await this.auth.isLoggedIn();
+
+      if (!isLoggedIn) {
+        console.log("ログインしていません。ブラウザを起動してログインしてください...");
+        await this.handleLogin(options);
+        
+        // ログインが成功したか再度確認
+        const checkResult = await this.handleCheckLogin(options);
+        if (!checkResult.success) {
+          return {
+            success: false,
+            command: "stats",
+            error: "ログインに失敗したため、統計情報を取得できませんでした。",
+          };
+        }
+        isLoggedIn = true;
+      }
+
+      console.log("今日のタスクの統計情報を取得中...");
+
+      const statsResult = await this.fetcher.getDailyTaskStats();
+
+      if (!statsResult.success) {
+        return {
+          success: false,
+          command: "stats",
+          error: "統計情報の取得に失敗しました",
+        };
+      }
+
+      console.log(JSON.stringify(statsResult.data, null, 2));
+
+      return { success: true, command: "stats", options };
+    } catch (error) {
+      return {
+        success: false,
+        command: "stats",
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  private async handleSaveHtml(options: Record<string, any>): Promise<CLIResult> {
+    try {
+      if (!options.output) {
+        throw new Error("--output オプションは必須です");
+      }
+
+      let isLoggedIn = await this.auth.isLoggedIn();
+      if (!isLoggedIn) {
+        console.log("ログインしていません。ブラウザを起動してログインしてください...");
+        await this.handleLogin(options);
+        
+        const checkResult = await this.handleCheckLogin(options);
+        if (!checkResult.success) {
+          return {
+            success: false,
+            command: "save-html",
+            error: "ログインに失敗したため、HTMLを保存できませんでした。",
+          };
+        }
+        isLoggedIn = true;
+      }
+
+      console.log(`現在のページのHTMLを ${options.output} に保存中...`);
+
+      await this.fetcher.navigateToTaskChute();
+      const htmlResult = await this.fetcher.getPageHTML();
+      if (!htmlResult.success) {
+        return {
+          success: false,
+          command: "save-html",
+          error: "HTMLの取得に失敗しました",
+        };
+      }
+
+      await this.fetcher.saveHTMLToFile(htmlResult.html!, options.output);
+
+      console.log("HTMLの保存が完了しました。");
+
+      return { success: true, command: "save-html", options };
+    } catch (error) {
+      return {
+        success: false,
+        command: "save-html",
+        error: (error as Error).message,
       };
     }
   }
@@ -167,7 +289,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         return { 
           success: false, 
           command: "fetch", 
-          error: "先にログインしてください (taskchute-cli login)" 
+          error: "先に `taskchute-cli check-login` を実行してログイン状態を確認してください" 
         };
       }
 

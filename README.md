@@ -182,6 +182,34 @@ CLIは以下の手順でTaskChute Cloudにログインします：
 
 ## トラブルシューティング
 
+### WSL環境でのGoogle 2段階認証の問題
+
+WSL (Windows Subsystem for Linux) 環境からヘッドレスモードでログインを実行すると、Googleの2段階認証が正常に完了しない場合があります。これは、WSL環境のブラウザが通常のデスクトップ環境と異なるセッションとして扱われるためです。
+
+この問題を解決するには、`TASKCHUTE_USER_DATA_DIR` 環境変数を使用して、Windows側にすでに存在するChromeのユーザープロファイルをPlaywrightに読み込ませます。これにより、普段使用しているブラウザのログイン状態やCookieを引き継ぐことができます。
+
+#### 設定手順
+
+1.  **WindowsのChromeユーザーデータディレクトリを確認する**
+    通常、以下のパスにあります。
+    `C:\Users\<Your-Username>\AppData\Local\Google\Chrome\User Data`
+
+2.  **WSLからアクセス可能なパスに変換する**
+    WSLからWindowsのファイルシステムにアクセスするには、`/mnt/c/` のようなパスを使用します。
+    `/mnt/c/Users/<Your-Username>/AppData/Local/Google/Chrome/User Data`
+
+3.  **環境変数を設定してCLIを実行する**
+    以下のコマンドで、指定したユーザープロファイルを使用してログインを実行します。
+
+    ```bash
+    export TASKCHUTE_USER_DATA_DIR="/mnt/c/Users/<Your-Username>/AppData/Local/Google/Chrome/User Data"
+    deno task start login
+    ```
+
+    **注意:**
+    - `<Your-Username>` はご自身のWindowsユーザー名に置き換えてください。
+    - この方法を使用する場合、Playwrightが起動するブラウザと、普段お使いのChromeブラウザを同時に起動しないでください。プロファイルがロックされ、エラーが発生する可能性があります。
+
 ### よくある問題
 
 1. **認証エラー**: `TASKCHUTE_EMAIL`と`TASKCHUTE_PASSWORD`の設定を確認

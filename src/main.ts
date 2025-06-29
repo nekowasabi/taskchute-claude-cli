@@ -22,7 +22,11 @@ async function main() {
     console.log("コマンドが正常に実行されました。");
     
   } catch (error) {
-    console.error(`予期しないエラーが発生しました: ${error.message}`);
+    if (error instanceof Error) {
+      console.error(`予期しないエラーが発生しました: ${error.message}`);
+    } else {
+      console.error(`予期しないエラーが発生しました: ${error}`);
+    }
     Deno.exit(1);
   }
 }
