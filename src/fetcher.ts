@@ -2,6 +2,8 @@ import { chromium, firefox, webkit, Browser, Page, BrowserContext } from "playwr
 import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
 import { LoginCredentials } from "./auth.ts";
+import { detectPlatform, getBrowserLaunchOptions } from "./platform.ts";
+import { TaskChuteCsvParser } from "./csv-parser.ts";
 
 /**
  * Fetcherのオプション
@@ -141,14 +143,48 @@ export class TaskChuteDataFetcher {
       if (this.options.userDataDir) {
         console.log(`[Fetcher] launchPersistentContextを使用: ${this.options.userDataDir}`);
         
+        // プラットフォーム情報を取得
+        const platformInfo = detectPlatform();
+        const launchOptions = getBrowserLaunchOptions(platformInfo);
+        
         // ディレクトリが存在しない場合は作成
         await ensureDir(this.options.userDataDir);
         
-        this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
-          headless: this.options.headless,
-          timeout: this.options.timeout,
-          viewport: this.options.viewport,
-        });
+        // M2 Macの場合は実際のChromeを使用
+        if (platformInfo.isMac) {
+          console.log("[Fetcher] Mac環境: 実際のGoogle Chromeを使用します");
+          browserLauncher = chromium;
+          
+          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
+            headless: this.options.headless,
+            timeout: this.options.timeout,
+            viewport: this.options.viewport,
+            channel: 'chrome', // 実際のChromeを使用
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            acceptDownloads: true,
+            downloadsPath: `${Deno.env.get("HOME")}/Downloads`
+          });
+        } else if (platformInfo.isWindows && this.options.userDataDir.includes("Google/Chrome")) {
+          // WindowsでChromeプロファイルを使用する場合
+          console.log("[Fetcher] Windows環境: Chromeプロファイルを使用します");
+          browserLauncher = chromium;
+          
+          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
+            headless: this.options.headless,
+            timeout: this.options.timeout,
+            viewport: this.options.viewport,
+            channel: launchOptions.channel,
+            args: ['--no-first-run', '--no-default-browser-check']
+          });
+        } else {
+          // その他の環境（Linux、WSLなど）
+          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
+            headless: this.options.headless,
+            timeout: this.options.timeout,
+            viewport: this.options.viewport,
+          });
+        }
+        
         this.browser = this.context.browser();
         this.page = this.context.pages()[0] || await this.context.newPage();
         
@@ -513,26 +549,102 @@ export class TaskChuteDataFetcher {
         console.log(`設定する日付: ${targetDate}`);
         
         try {
+          // Phase 1: fill()メソッドを使用した日付入力（優先順位1）
+          console.log("Phase 1: fill()メソッドで日付を入力中...");
+          
           // 開始日を入力（最初の日付フィールド）
           console.log("開始日を入力中...");
           await dateInputs[0].input.click();
-          await dateInputs[0].input.selectAll();
-          await dateInputs[0].input.type(targetDate);
-          await this.page!.waitForTimeout(1000);
+          await dateInputs[0].input.fill(targetDate);
+          await this.page!.waitForTimeout(500);
           
           // 終了日を入力（2番目の日付フィールド）  
           console.log("終了日を入力中...");
           await dateInputs[1].input.click();
-          await dateInputs[1].input.selectAll();
-          await dateInputs[1].input.type(targetDate);
-          await this.page!.waitForTimeout(2000); // 少し長めに待機
-          
-          console.log("日付入力完了");
+          await dateInputs[1].input.fill(targetDate);
+          await this.page!.waitForTimeout(1000);
           
           // 入力値を確認
-          const startValue = await dateInputs[0].input.inputValue();
-          const endValue = await dateInputs[1].input.inputValue();
-          console.log(`入力確認 - 開始日: "${startValue}", 終了日: "${endValue}"`);
+          let startValue = await dateInputs[0].input.inputValue();
+          let endValue = await dateInputs[1].input.inputValue();
+          console.log(`入力確認（fill後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
+          
+          // fill()メソッドが失敗した場合、keyboard操作を試行（優先順位2）
+          if (!startValue || !endValue || startValue === "" || endValue === "") {
+            console.log("fill()メソッドが失敗。keyboard操作を試行中...");
+            
+            // 開始日をkeyboard操作で入力
+            await dateInputs[0].input.click();
+            await this.page!.keyboard.press('Control+a');
+            await this.page!.keyboard.type(targetDate);
+            await this.page!.waitForTimeout(500);
+            
+            // 終了日をkeyboard操作で入力
+            await dateInputs[1].input.click();
+            await this.page!.keyboard.press('Control+a');
+            await this.page!.keyboard.type(targetDate);
+            await this.page!.waitForTimeout(1000);
+            
+            // 再度入力値を確認
+            startValue = await dateInputs[0].input.inputValue();
+            endValue = await dateInputs[1].input.inputValue();
+            console.log(`入力確認（keyboard後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
+          }
+          
+          // それでも失敗した場合、フィールドクリア + 入力を試行（優先順位3）
+          if (!startValue || !endValue || startValue === "" || endValue === "") {
+            console.log("keyboard操作が失敗。フィールドクリア + 入力を試行中...");
+            
+            // 開始日
+            await dateInputs[0].input.click();
+            await dateInputs[0].input.fill('');
+            await dateInputs[0].input.type(targetDate);
+            await this.page!.waitForTimeout(500);
+            
+            // 終了日
+            await dateInputs[1].input.click();
+            await dateInputs[1].input.fill('');
+            await dateInputs[1].input.type(targetDate);
+            await this.page!.waitForTimeout(1000);
+            
+            // 再度入力値を確認
+            startValue = await dateInputs[0].input.inputValue();
+            endValue = await dateInputs[1].input.inputValue();
+            console.log(`入力確認（クリア後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
+          }
+          
+          // 最終手段: evaluateを使った直接DOM操作（優先順位4）
+          if (!startValue || !endValue || startValue === "" || endValue === "") {
+            console.log("通常の入力方法が失敗。evaluateで直接DOM操作を試行中...");
+            
+            // 開始日の直接設定
+            await dateInputs[0].input.evaluate((el: HTMLInputElement, value: string) => {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, targetDate);
+            await this.page!.waitForTimeout(500);
+            
+            // 終了日の直接設定
+            await dateInputs[1].input.evaluate((el: HTMLInputElement, value: string) => {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, targetDate);
+            await this.page!.waitForTimeout(1000);
+            
+            // 最終確認
+            startValue = await dateInputs[0].input.inputValue();
+            endValue = await dateInputs[1].input.inputValue();
+            console.log(`入力確認（evaluate後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
+          }
+          
+          console.log("日付入力処理完了");
+          
+          // 日付ピッカーのツールチップを閉じるため、ページの他の場所をクリック
+          console.log("日付ピッカーを閉じるため、ページをクリック...");
+          await this.page!.click('body', { position: { x: 10, y: 10 } });
+          await this.page!.waitForTimeout(1000);
           
           // ダウンロードボタンが有効になるまで待機
           console.log("ダウンロードボタンが有効になるまで待機中...");
@@ -541,55 +653,232 @@ export class TaskChuteDataFetcher {
             console.log("ダウンロードボタンが有効になりました");
           } catch (error) {
             console.log("ダウンロードボタンの有効化待機がタイムアウトしました:", error);
+            // デバッグ情報を追加
+            const buttonState = await this.page!.locator('button:has-text("ダウンロード")').first().evaluate((el) => {
+              return {
+                disabled: (el as HTMLButtonElement).disabled,
+                classList: Array.from(el.classList),
+                ariaDisabled: el.getAttribute('aria-disabled')
+              };
+            });
+            console.log("ダウンロードボタンの状態:", buttonState);
           }
           
         } catch (error) {
           console.error("日付入力エラー:", error);
+          // エラー時のデバッグ情報を保存
+          const debugPath = `tmp/claude/date-input-error-${Date.now()}.png`;
+          await this.page!.screenshot({ path: debugPath, fullPage: true });
+          console.log(`エラー時のスクリーンショット: ${debugPath}`);
         }
       }
 
       // Step 6: ダウンロードボタンをクリック
       console.log("Step 6: ダウンロードボタンをクリック中...");
       
-      // ダウンロードボタンを再検索（状態が変わった可能性があるため）
-      const downloadButtons = await this.page!.locator('button:has-text("ダウンロード")').all();
-      console.log(`ダウンロードボタン数: ${downloadButtons.length}`);
+      // 複数のセレクタでダウンロードボタンを検索
+      const downloadButtonSelectors = [
+        // FileDownloadIconを含むボタン
+        'button:has([data-testid="FileDownloadIcon"])',
+        // ダウンロードテキストを含むMUIボタン
+        'button.MuiButton-root:has-text("ダウンロード")',
+        // 一般的なダウンロードボタン
+        'button:has-text("ダウンロード")',
+        'button:has-text("Download")',
+        // SVGアイコンを含むボタン
+        'button:has(svg[data-testid="FileDownloadIcon"])'
+      ];
       
-      if (downloadButtons.length > 0) {
-        // ボタンが有効かどうかを確認
-        const isDisabled = await downloadButtons[0].evaluate(el => el.classList.contains('Mui-disabled'));
-        console.log(`ダウンロードボタンの状態: ${isDisabled ? '無効' : '有効'}`);
-        
-        if (isDisabled) {
-          console.log("ダウンロードボタンが無効状態です。強制的にクリックを試行します。");
+      let downloadButton = null;
+      for (const selector of downloadButtonSelectors) {
+        try {
+          const button = this.page!.locator(selector).first();
+          if (await button.isVisible({ timeout: 1000 })) {
+            downloadButton = button;
+            console.log(`ダウンロードボタンを発見: ${selector}`);
+            break;
+          }
+        } catch {
+          // 次のセレクタを試す
         }
+      }
+      
+      if (downloadButton) {
+        // ボタンの状態を確認
+        const buttonInfo = await downloadButton.evaluate((el) => {
+          const button = el as HTMLButtonElement;
+          return {
+            disabled: button.disabled,
+            ariaDisabled: button.getAttribute('aria-disabled'),
+            classList: Array.from(button.classList).join(' '),
+            text: button.textContent?.trim()
+          };
+        });
+        console.log("ダウンロードボタンの情報:", buttonInfo);
         
         try {
           console.log("ダウンロードボタンをクリック中...");
           
-          // ダウンロード待機の準備
-          const downloadPromise = this.page!.waitForEvent('download', { timeout: 30000 });
+          // 日付ピッカーのツールチップが表示されていないか確認
+          const tooltips = await this.page!.locator('[role="tooltip"]').all();
+          if (tooltips.length > 0) {
+            console.log("ツールチップが表示されています。閉じるため、ページをクリック...");
+            await this.page!.click('body', { position: { x: 10, y: 10 } });
+            await this.page!.waitForTimeout(1000);
+          }
           
-          // ボタンをクリック（強制的に）
-          await downloadButtons[0].click({ force: true });
+          // ダウンロードディレクトリの確認用に現在時刻を記録
+          const downloadStartTime = Date.now();
           
-          // ダウンロード完了を待機
-          const download = await downloadPromise;
-          console.log(`ダウンロード開始: ${download.suggestedFilename()}`);
+          // ボタンをクリック（必要に応じて強制的に）
+          if (buttonInfo.disabled) {
+            console.log("ボタンが無効状態ですが、強制的にクリックを試みます");
+            await downloadButton.click({ force: true });
+          } else {
+            // 通常のクリックが失敗する場合、JavaScript経由でクリック
+            try {
+              await downloadButton.click();
+            } catch (clickError) {
+              console.log("通常のクリックが失敗。JavaScript経由でクリックを試みます...");
+              await downloadButton.evaluate((el) => (el as HTMLButtonElement).click());
+            }
+          }
+          console.log("ダウンロードボタンをクリックしました");
           
-          // ダウンロードファイルを保存
-          const downloadPath = `tmp/claude/${download.suggestedFilename() || 'taskchute-export.csv'}`;
-          await download.saveAs(downloadPath);
-          console.log(`CSVファイルを保存: ${downloadPath}`);
+          // クリック後のページ状態を確認
+          await this.page!.waitForTimeout(2000);
           
-          return { success: true, tasks: [], downloadPath };
+          // エラーメッセージやスナックバーを確認
+          const snackbar = await this.page!.locator('.MuiSnackbar-root, [role="alert"]').first();
+          if (await snackbar.isVisible({ timeout: 1000 })) {
+            const snackbarText = await snackbar.textContent();
+            console.log("スナックバーメッセージ:", snackbarText);
+          }
+          
+          // クリック後の処理を待つ
+          await this.page!.waitForTimeout(3000);
+          
+          // ダウンロードディレクトリを確認
+          console.log("ダウンロードディレクトリを確認中...");
+          const downloadDir = `${Deno.env.get("HOME")}/Downloads`;
+          let foundFile = null;
+          
+          try {
+            const files = await Deno.readDir(downloadDir);
+            
+            // 最近のファイルを探す（CSVファイルは拡張子がない場合がある）
+            const recentFiles = [];
+            for await (const file of files) {
+              // CSVファイルまたはUUID形式のファイル名をチェック
+              if (file.name.endsWith(".csv") || 
+                  /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(file.name)) {
+                const filePath = `${downloadDir}/${file.name}`;
+                const stat = await Deno.stat(filePath);
+                recentFiles.push({ name: file.name, path: filePath, mtime: stat.mtime!.getTime() });
+              }
+            }
+            
+            // 最新のファイルを確認
+            recentFiles.sort((a, b) => b.mtime - a.mtime);
+            
+            if (recentFiles.length > 0) {
+              console.log(`最近のダウンロード候補:`);
+              for (let i = 0; i < Math.min(3, recentFiles.length); i++) {
+                const file = recentFiles[i];
+                console.log(`  ${i+1}. ${file.name} (${new Date(file.mtime).toLocaleString()})`);
+                
+                // クリック後に作成されたファイルかチェック
+                if (file.mtime >= downloadStartTime - 5000) { // 5秒のマージン
+                  // ファイルタイプを確認
+                  const fileContent = await Deno.readTextFile(file.path);
+                  if (fileContent.includes('","') || fileContent.includes(',')) {
+                    console.log(`  → CSVファイルとして検出`);
+                    foundFile = file.path;
+                    break;
+                  }
+                }
+              }
+            }
+            
+            if (foundFile) {
+              // ファイルを指定ディレクトリにコピー（.csv拡張子を付ける）
+              const targetPath = `tmp/claude/taskchute-export-${Date.now()}.csv`;
+              await Deno.copyFile(foundFile, targetPath);
+              console.log(`✅ CSVファイルをコピー: ${targetPath}`);
+              
+              // ファイルサイズを確認
+              const fileInfo = await Deno.stat(targetPath);
+              console.log(`ファイルサイズ: ${fileInfo.size.toLocaleString()} bytes`);
+              
+              // 元ファイルを削除（オプション）
+              try {
+                await Deno.remove(foundFile);
+                console.log(`元ファイルを削除: ${foundFile}`);
+              } catch (e) {
+                // 削除エラーは無視
+              }
+              
+              // CSVをパース
+              try {
+                const parser = new TaskChuteCsvParser();
+                const tasks = await parser.parseFile(targetPath);
+                console.log(`\nCSVパース完了: ${tasks.length}件のタスクを抽出`);
+                
+                // 統計情報を表示
+                const stats = parser.calculateStats(tasks);
+                console.log(`完了: ${stats.completedTasks}件, 進行中: ${stats.inProgressTasks}件, 未実施: ${stats.pendingTasks}件`);
+                console.log(`合計時間: ${Math.floor(stats.totalDuration / 60)}時間${stats.totalDuration % 60}分`);
+                
+                return { success: true, tasks, downloadPath: targetPath };
+              } catch (parseError) {
+                console.error("CSVパースエラー:", parseError);
+                // パースエラーでもダウンロードは成功として扱う
+                return { success: true, tasks: [], downloadPath: targetPath };
+              }
+            } else {
+              // ダウンロードイベントを待機（フォールバック）
+              console.log("ダウンロードファイルが見つからないため、イベントを待機します...");
+              
+              try {
+                const download = await this.page!.waitForEvent('download', { timeout: 10000 });
+                console.log(`ダウンロードイベントを検出: ${download.suggestedFilename()}`);
+                
+                const downloadPath = `tmp/claude/${download.suggestedFilename() || 'taskchute-export.csv'}`;
+                await download.saveAs(downloadPath);
+                console.log(`CSVファイルを保存: ${downloadPath}`);
+                
+                return { success: true, tasks: [], downloadPath };
+              } catch (downloadError) {
+                console.error("ダウンロードイベントの待機でエラー:", downloadError);
+                throw new Error("CSVファイルのダウンロードに失敗しました");
+              }
+            }
+          } catch (error) {
+            console.error("ダウンロードディレクトリの確認でエラー:", error);
+            throw error;
+          }
           
         } catch (error) {
           console.error("ダウンロードエラー:", error);
+          
+          // エラー時のスクリーンショット
+          const errorScreenshot = `tmp/claude/download-error-${Date.now()}.png`;
+          await this.page!.screenshot({ path: errorScreenshot, fullPage: true });
+          console.log(`エラースクリーンショット: ${errorScreenshot}`);
+          
           return { success: false, error: `ダウンロードに失敗しました: ${error}` };
         }
       } else {
         console.log("ダウンロードボタンが見つかりません");
+        
+        // デバッグ用：ページ内のすべてのボタンを確認
+        const allButtons = await this.page!.locator('button').all();
+        console.log(`ページ内のボタン総数: ${allButtons.length}`);
+        for (let i = 0; i < Math.min(allButtons.length, 5); i++) {
+          const text = await allButtons[i].textContent();
+          console.log(`ボタン${i + 1}: ${text?.trim()}`);
+        }
+        
         return { success: false, error: "ダウンロードボタンが見つかりません" };
       }
 
