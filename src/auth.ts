@@ -233,4 +233,72 @@ export class TaskChuteAuth {
 
     return new TaskChuteAuth({ email, password });
   }
+
+  /**
+   * プラットフォームを検出してログイン方法を決定する
+   * @returns プラットフォーム固有のログイン設定
+   * @static
+   */
+  static async detectLoginMethod(): Promise<{
+    needsCredentials: boolean;
+    platformInfo: any;
+    chromeProfilePath?: string;
+  }> {
+    const platformInfo = detectPlatform();
+    logPlatformInfo(platformInfo);
+
+    // MacまたはWindowsで、Chromeプロファイルが存在する場合
+    if ((platformInfo.isMac || platformInfo.isWindows) && platformInfo.chromeUserDataDir) {
+      const profileExists = await checkChromeUserDataDir(platformInfo.chromeUserDataDir);
+      if (profileExists) {
+        console.log("\n✅ Chromeプロファイルを検出しました");
+        console.log("既存のChromeプロファイルを使用してログインします");
+        return {
+          needsCredentials: false,
+          platformInfo,
+          chromeProfilePath: platformInfo.chromeUserDataDir
+        };
+      }
+    }
+
+    // WSLで環境変数が設定されている場合
+    if (platformInfo.isWSL && platformInfo.chromeUserDataDir) {
+      const profileExists = await checkChromeUserDataDir(platformInfo.chromeUserDataDir);
+      if (profileExists) {
+        console.log("\n✅ Windows側のChromeプロファイルを検出しました");
+        return {
+          needsCredentials: false,
+          platformInfo,
+          chromeProfilePath: platformInfo.chromeUserDataDir
+        };
+      }
+    }
+
+    // Chromeプロファイルが使用できない場合は認証情報が必要
+    console.log("\n⚠️ Chromeプロファイルが見つかりません");
+    console.log("環境変数による認証が必要です");
+    return {
+      needsCredentials: true,
+      platformInfo
+    };
+  }
+
+  /**
+   * プラットフォームに応じて適切なAuthインスタンスを作成
+   * @static
+   */
+  static async createForPlatform(): Promise<TaskChuteAuth> {
+    const loginMethod = await this.detectLoginMethod();
+    
+    if (loginMethod.needsCredentials) {
+      // 認証情報が必要な場合
+      return this.fromEnvironment();
+    } else {
+      // Chromeプロファイルを使用する場合（ダミーの認証情報）
+      return new TaskChuteAuth({ 
+        email: "chrome-profile@example.com", 
+        password: "chrome-profile" 
+      });
+    }
+  }
 }

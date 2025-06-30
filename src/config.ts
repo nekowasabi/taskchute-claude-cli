@@ -27,8 +27,9 @@ export class ConfigManager {
     this.configPath = join(Deno.env.get("HOME") || ".", ".taskchute", "config.json");
     this.defaultConfig = {
       auth: {
-        email: Deno.env.get("TASKCHUTE_EMAIL") || "",
-        password: Deno.env.get("TASKCHUTE_PASSWORD") || ""
+        // Chrome プロファイルを使用するため、ダミー値を設定
+        email: "chrome-profile@example.com",
+        password: "not-used"
       },
       fetcher: {
         headless: true,
@@ -115,8 +116,9 @@ export class ConfigManager {
     // 環境変数から設定を取得（実行時に毎回チェック）
     return {
       auth: {
-        email: Deno.env.get("TASKCHUTE_EMAIL") || this.defaultConfig.auth.email,
-        password: Deno.env.get("TASKCHUTE_PASSWORD") || this.defaultConfig.auth.password
+        // Chrome プロファイルを使用するため、環境変数は不要
+        email: "chrome-profile@example.com",
+        password: "not-used"
       },
       fetcher: {
         headless: Deno.env.get("TASKCHUTE_HEADLESS") === "false" ? false : this.defaultConfig.fetcher.headless,
@@ -163,16 +165,7 @@ export class ConfigManager {
     const config = await this.loadConfig();
     const errors: string[] = [];
 
-    // 認証設定の検証
-    if (!config.auth.email) {
-      errors.push("Email is required (TASKCHUTE_EMAIL environment variable or config file)");
-    }
-    if (!config.auth.password) {
-      errors.push("Password is required (TASKCHUTE_PASSWORD environment variable or config file)");
-    }
-    if (config.auth.email && !this.isValidEmail(config.auth.email)) {
-      errors.push("Valid email address is required");
-    }
+    // Chrome プロファイルを使用するため、認証設定の検証はスキップ
 
     // フェッチャー設定の検証
     if (!["chromium", "firefox", "webkit"].includes(config.fetcher.browser!)) {
