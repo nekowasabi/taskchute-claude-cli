@@ -21,6 +21,7 @@ export class CLI {
   private auth: TaskChuteAuth;
   public fetcher: TaskChuteDataFetcher;
   private config: ConfigManager;
+  private loginMethod?: any;
 
   constructor() {
     this.config = new ConfigManager();
@@ -30,6 +31,44 @@ export class CLI {
     
     const fetcherOptions = this.config.getFetcherOptions();
     this.fetcher = new TaskChuteDataFetcher(fetcherOptions);
+  }
+
+  /**
+   * プラットフォームに応じたCLIの初期化
+   * @static
+   */
+  static async createForPlatform(): Promise<CLI> {
+    // プラットフォーム検出とログイン方法の決定
+    const loginMethod = await TaskChuteAuth.detectLoginMethod();
+    
+    // ConfigManagerを作成して設定を更新
+    const config = new ConfigManager();
+    
+    if (!loginMethod.needsCredentials && loginMethod.chromeProfilePath) {
+      // Chromeプロファイルを使用する場合は、ダミーの認証情報を設定
+      await config.saveConfig({
+        auth: {
+          email: "chrome-profile@example.com",
+          password: "chrome-profile"
+        },
+        fetcher: {
+          userDataDir: loginMethod.chromeProfilePath
+        }
+      });
+    }
+    
+    // CLIインスタンスを作成
+    const cli = new CLI();
+    cli.loginMethod = loginMethod;
+    
+    // Chromeプロファイルが使用可能な場合は、fetcherのuserDataDirを更新
+    if (!loginMethod.needsCredentials && loginMethod.chromeProfilePath) {
+      cli.fetcher.updateOptions({
+        userDataDir: loginMethod.chromeProfilePath
+      });
+    }
+    
+    return cli;
   }
 
   /**
