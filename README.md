@@ -1,19 +1,20 @@
 # taskchute-claude-cli
 
-TaskChute Cloud連携CLIツール - 環境変数ベースの直接ログインでPlaywright自動化を実現
+TaskChute Cloud連携CLIツール - ブラウザ自動化によるCSVエクスポート機能を提供
 
 ## 概要
 
-このCLIツールは、環境変数に設定したメールアドレス・パスワードを使用してTaskChute CloudへのPlaywrightブラウザ操作によるログインとHTMLデータ取得を自動化します。
+このCLIツールは、TaskChute CloudのCSVエクスポート機能をブラウザ自動化により実現します。Chrome プロファイルを利用したセッション永続化により、一度ログインすれば継続的にデータ取得が可能です。
 
 ## 特徴
 
 - **TDD開発**: テスト駆動開発でコード品質を担保
 - **Deno**: モダンなTypeScript/JavaScriptランタイム
 - **Playwright**: 信頼性の高いブラウザ自動化
-- **直接ログイン**: 環境変数のメール・パスワードによるブラウザ操作ログイン
-- **複数ブラウザ対応**: Chromium, Firefox, WebKit
-- **セッション管理**: ファイルベースのセッション状態管理
+- **CSVエクスポート**: 日付範囲を指定してタスクデータをCSV形式で取得
+- **セッション永続化**: Chrome プロファイルによるログイン状態の保持
+- **プラットフォーム対応**: macOS, Windows, WSL, Linuxに対応
+- **自動ファイル検出**: 拡張子なしCSVファイルの自動検出・処理
 
 ## インストール
 
@@ -31,12 +32,12 @@ deno task test
 
 ## 使用方法
 
-### 環境変数の設定
+### Chrome プロファイルの設定
 
-```bash
-export TASKCHUTE_EMAIL="your-email@example.com"
-export TASKCHUTE_PASSWORD="your-password"
-```
+このCLIツールは、既存のChromeプロファイルからログイン情報を引き継ぐため、メールアドレスやパスワードの入力は不要です。
+
+1. 事前に通常のChromeブラウザでTaskChute Cloudにログイン
+2. CLIを実行すると、Chromeプロファイルが自動的にコピーされ使用される
 
 ### 基本コマンド
 
@@ -50,11 +51,14 @@ deno task start login
 # ヘッドレスモードでログイン
 deno task start login --headless
 
-# TaskChuteデータをHTMLファイルに取得
-deno task start fetch --output ./tasks.html
+# CSVファイルをダウンロード（今日のデータ）
+deno task csv-download
 
-# TaskChuteデータをJSONファイルに取得
-deno task start fetch --output ./tasks.json
+# 特定の日付範囲でCSVダウンロード
+deno task start csv-download --start 2025-06-01 --end 2025-06-30
+
+# ヘッドレスモードでCSVダウンロード
+deno task start csv-download --headless
 
 # ログイン状態確認
 deno task start status
@@ -72,13 +76,15 @@ deno task start login --timeout 60000
 # 非ヘッドレスモードで実行（デバッグ用・ブラウザ画面が見える）
 TASKCHUTE_HEADLESS=false deno task start login
 
-# 実際のTaskChute Cloud環境でのテスト
-export TASKCHUTE_EMAIL="your-google-email@gmail.com"
-export TASKCHUTE_PASSWORD="your-google-password"
-deno run --allow-all src/main.ts login
+# 実際のTaskChute Cloud環境でのCSVダウンロード
+deno task csv-download
 
-# ログイン後のデータ取得
-deno run --allow-all src/main.ts fetch --output ./taskchute-data.html
+# CSVエクスポートページのテスト（ヘッドフルモード）
+deno task csv-test
+
+# カスタムChromeプロファイルを指定
+export TASKCHUTE_USER_DATA_DIR="/path/to/custom/chrome/profile"
+deno task csv-download
 ```
 
 ## 開発
@@ -105,7 +111,10 @@ taskchute-claude-cli/
 │   ├── cli.ts           # CLIコマンド処理
 │   ├── auth.ts          # 認証・セッション管理
 │   ├── fetcher.ts       # データ取得・ブラウザ制御
-│   └── config.ts        # 設定管理
+│   ├── config.ts        # 設定管理
+│   ├── platform.ts      # プラットフォーム検出
+│   ├── chrome-profile-manager.ts  # Chrome プロファイル管理
+│   └── csv-parser.ts    # CSVパース機能
 ├── tests/
 │   ├── cli_test.ts      # CLIテスト
 │   ├── auth_test.ts     # 認証テスト
@@ -120,8 +129,8 @@ taskchute-claude-cli/
 
 | 変数名 | 説明 | デフォルト値 |
 |--------|------|-------------|
-| `TASKCHUTE_EMAIL` | TaskChute Cloudログイン用メールアドレス | 必須 |
-| `TASKCHUTE_PASSWORD` | TaskChute Cloudログイン用パスワード | 必須 |
+| `TASKCHUTE_EMAIL` | (廃止) Chromeプロファイルを使用するため不要 | - |
+| `TASKCHUTE_PASSWORD` | (廃止) Chromeプロファイルを使用するため不要 | - |
 | `TASKCHUTE_HEADLESS` | ヘッドレスモード | `true` |
 | `TASKCHUTE_BROWSER` | 使用ブラウザ | `chromium` |
 | `TASKCHUTE_TIMEOUT` | タイムアウト(ms) | `30000` |
@@ -134,8 +143,8 @@ taskchute-claude-cli/
 ```json
 {
   "auth": {
-    "email": "your-email@example.com",
-    "password": "your-password"
+    "email": "chrome-profile@example.com",
+    "password": "not-used"
   },
   "fetcher": {
     "headless": true,
@@ -180,6 +189,44 @@ CLIは以下の手順でTaskChute Cloudにログインします：
 - **デバッグ機能**: ログイン失敗時はスクリーンショットとページ詳細情報を保存
 - **タイムアウト制御**: 各段階で適切なタイムアウト設定
 
+## 新機能の詳細
+
+### CSVエクスポート機能
+
+TaskChute CloudのCSVエクスポートページからデータを自動取得します。
+
+#### 主な特徴
+
+- **日付入力の完全対応**: Material-UI DatePickerへの4つの入力方法
+  - fill()メソッド
+  - keyboard操作（Ctrl+A → type）
+  - フィールドクリア + 入力
+  - evaluateによるDOM直接操作
+
+- **ファイル検出の強化**: 拡張子なしUUID形式ファイルに対応
+- **CSVパース機能**: BOM除去、タスクデータ抽出、統計情報計算
+
+#### 取得されるCSVデータ
+
+```csv
+タイムライン日付,タスクID,タスク名,プロジェクトID,プロジェクト名,
+モードID,モード名,タグID,タグ名,ルーチンID,ルーチン名,
+見積時間,実績時間,開始日時,終了日時,リンク,アイコン,カラー,お気に入り
+```
+
+### Chrome プロファイル管理
+
+ログインセッションを永続化するため、Chrome プロファイルをコピーして使用します。
+
+#### SingletonLock問題の回避
+
+通常のChromeとPlaywrightが同じプロファイルを同時に使用できない問題を、プロファイルのコピーにより解決します。
+
+```bash
+# 既存のChromeプロファイルからセッションを引き継ぎ
+~/.taskchute/chrome-profile-copy/
+```
+
 ## トラブルシューティング
 
 ### WSL環境でのGoogle 2段階認証の問題
@@ -216,6 +263,8 @@ WSL (Windows Subsystem for Linux) 環境からヘッドレスモードでログ�
 2. **ブラウザ起動失敗**: Playwrightの依存関係をインストール
 3. **タイムアウトエラー**: `--timeout` オプションで時間を延長
 4. **ログインボタンが見つからない**: TaskChute Cloudのページ構造変更の可能性
+5. **CSVファイルが見つからない**: ダウンロードディレクトリを確認
+6. **日付入力が失敗する**: Material-UI DatePickerの特殊性によるもの
 
 ### ログとデバッグ
 
@@ -243,6 +292,15 @@ rm ~/.taskchute/session.json
 deno task start login
 ```
 
+### macOSでのM2チップ対応
+
+M2 MacでPlaywrightのビルトインChromiumがクラッシュする場合は、実際のGoogle Chromeを使用します。
+
+```typescript
+// src/platform.tsが自動的にmacOSを検出して対応
+channel: 'chrome' // 実際のChromeを使用
+```
+
 ## 技術仕様
 
 ### ブラウザ自動化詳細
@@ -264,6 +322,13 @@ deno task start login
 MIT License
 
 ## 開発履歴
+
+- **v3.0.0**: CSVエクスポート機能の完全実装
+  - Material-UI DatePicker対応（4つの入力方法）
+  - Chrome プロファイルコピーによるセッション永続化
+  - 拡張子なしCSVファイル（UUID形式）の検出
+  - CSVパース機能（BOM除去、統計情報計算）
+  - プラットフォーム別対応（macOS/WSL/Windows/Linux）
 
 - **v2.0.0**: 環境変数ベースの直接ログインに変更
   - OAuth2.0からブラウザ操作ログインに変更
