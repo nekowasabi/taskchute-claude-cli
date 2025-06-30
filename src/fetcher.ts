@@ -211,10 +211,12 @@ export class TaskChuteDataFetcher {
 
   /**
    * TaskChute Cloudのページに遷移する
+   * @param fromDate 開始日付 (YYYY-MM-DD形式)
+   * @param toDate 終了日付 (YYYY-MM-DD形式)
    * @param mockOptions モックオプション
    * @returns ナビゲーション結果
    */
-  async navigateToTaskChute(mockOptions: { mock?: boolean; forceTimeout?: boolean; forceNetworkError?: boolean } = {}): Promise<NavigationResult> {
+  async navigateToTaskChute(fromDate?: string, toDate?: string, mockOptions: { mock?: boolean; forceTimeout?: boolean; forceNetworkError?: boolean } = {}): Promise<NavigationResult> {
     if (mockOptions.mock) {
       if (mockOptions.forceTimeout) {
         throw new Error("Navigation timeout");
@@ -233,7 +235,14 @@ export class TaskChuteDataFetcher {
     }
 
     try {
-      await this.page!.goto("https://taskchute.cloud/taskchute", {
+      // 日付パラメータがある場合はURLに追加
+      let url = "https://taskchute.cloud/taskchute";
+      if (fromDate && toDate) {
+        url += `?from=${fromDate}&to=${toDate}`;
+        console.log(`[Fetcher] 日付範囲指定のURLへ遷移: ${url}`);
+      }
+
+      await this.page!.goto(url, {
         waitUntil: "networkidle",
         timeout: this.options.timeout
       });
@@ -403,9 +412,11 @@ export class TaskChuteDataFetcher {
 
   /**
    * CSVエクスポート機能を使用してタスクデータを取得する
+   * @param fromDate 開始日付 (YYYYMMDD形式、省略時は今日)
+   * @param toDate 終了日付 (YYYYMMDD形式、省略時は今日)
    * @returns フェッチ結果
    */
-  async getTaskDataFromCSV(): Promise<FetchResult<TaskData[]>> {
+  async getTaskDataFromCSV(fromDate?: string, toDate?: string): Promise<FetchResult<TaskData[]>> {
     if (!this.page) {
       const browserResult = await this.launchBrowser();
       if (!browserResult.success) {
@@ -543,10 +554,16 @@ export class TaskChuteDataFetcher {
       console.log(`日付入力フィールド数: ${dateInputs.length}`);
       
       if (dateInputs.length >= 2) {
-        // 指定された日付（20250629）を設定
-        const targetDate = "20250629";
+        // 日付が指定されていない場合は今日の日付を使用
+        const today = new Date();
+        const defaultDate = today.getFullYear().toString() + 
+                          (today.getMonth() + 1).toString().padStart(2, '0') + 
+                          today.getDate().toString().padStart(2, '0');
         
-        console.log(`設定する日付: ${targetDate}`);
+        const startDate = fromDate || defaultDate;
+        const endDate = toDate || defaultDate;
+        
+        console.log(`設定する日付 - 開始: ${startDate}, 終了: ${endDate}`);
         
         try {
           // Phase 1: fill()メソッドを使用した日付入力（優先順位1）
@@ -555,13 +572,13 @@ export class TaskChuteDataFetcher {
           // 開始日を入力（最初の日付フィールド）
           console.log("開始日を入力中...");
           await dateInputs[0].input.click();
-          await dateInputs[0].input.fill(targetDate);
+          await dateInputs[0].input.fill(startDate);
           await this.page!.waitForTimeout(500);
           
           // 終了日を入力（2番目の日付フィールド）  
           console.log("終了日を入力中...");
           await dateInputs[1].input.click();
-          await dateInputs[1].input.fill(targetDate);
+          await dateInputs[1].input.fill(endDate);
           await this.page!.waitForTimeout(1000);
           
           // 入力値を確認
@@ -576,13 +593,13 @@ export class TaskChuteDataFetcher {
             // 開始日をkeyboard操作で入力
             await dateInputs[0].input.click();
             await this.page!.keyboard.press('Control+a');
-            await this.page!.keyboard.type(targetDate);
+            await this.page!.keyboard.type(startDate);
             await this.page!.waitForTimeout(500);
             
             // 終了日をkeyboard操作で入力
             await dateInputs[1].input.click();
             await this.page!.keyboard.press('Control+a');
-            await this.page!.keyboard.type(targetDate);
+            await this.page!.keyboard.type(endDate);
             await this.page!.waitForTimeout(1000);
             
             // 再度入力値を確認
@@ -598,13 +615,13 @@ export class TaskChuteDataFetcher {
             // 開始日
             await dateInputs[0].input.click();
             await dateInputs[0].input.fill('');
-            await dateInputs[0].input.type(targetDate);
+            await dateInputs[0].input.type(startDate);
             await this.page!.waitForTimeout(500);
             
             // 終了日
             await dateInputs[1].input.click();
             await dateInputs[1].input.fill('');
-            await dateInputs[1].input.type(targetDate);
+            await dateInputs[1].input.type(endDate);
             await this.page!.waitForTimeout(1000);
             
             // 再度入力値を確認
@@ -622,7 +639,7 @@ export class TaskChuteDataFetcher {
               el.value = value;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, targetDate);
+            }, startDate);
             await this.page!.waitForTimeout(500);
             
             // 終了日の直接設定
@@ -630,7 +647,7 @@ export class TaskChuteDataFetcher {
               el.value = value;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, targetDate);
+            }, endDate);
             await this.page!.waitForTimeout(1000);
             
             // 最終確認

@@ -52,7 +52,13 @@ Deno.test("TaskChuteDataFetcher - ページナビゲーションテスト", asyn
   });
 
   await t.step("TaskChute Cloudにナビゲートできること", async () => {
-    const result = await fetcher.navigateToTaskChute({ mock: true });
+    const result = await fetcher.navigateToTaskChute(undefined, undefined, { mock: true });
+    assertEquals(result.success, true);
+    assertEquals(result.currentUrl, "https://taskchute.cloud");
+  });
+
+  await t.step("日付範囲を指定してナビゲートできること", async () => {
+    const result = await fetcher.navigateToTaskChute("2025-06-01", "2025-06-30", { mock: true });
     assertEquals(result.success, true);
     assertEquals(result.currentUrl, "https://taskchute.cloud");
   });
@@ -63,7 +69,7 @@ Deno.test("TaskChuteDataFetcher - ページナビゲーションテスト", asyn
     });
 
     try {
-      await timeoutFetcher.navigateToTaskChute({ mock: true, forceTimeout: true });
+      await timeoutFetcher.navigateToTaskChute(undefined, undefined, { mock: true, forceTimeout: true });
       throw new Error("例外が発生するべきです");
     } catch (error) {
       assertStringIncludes((error as Error).message, "timeout");

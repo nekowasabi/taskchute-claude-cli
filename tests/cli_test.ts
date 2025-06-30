@@ -61,12 +61,33 @@ Deno.test("CLI - fetchコマンドのテスト", async (t) => {
 
   await t.step("fetchコマンドで出力ファイルが必須であること", async () => {
     const cli = new CLI();
-    try {
-      await cli.run(["fetch", "--dry-run"]);
-      throw new Error("例外が発生するべきです");
-    } catch (error) {
-      assertStringIncludes((error as Error).message, "output");
-    }
+    const result = await cli.run(["fetch"]);
+    assertEquals(result.success, false);
+    assertStringIncludes(result.error!, "output");
+  });
+
+  await t.step("fetchコマンドで--fromと--toオプションが認識されること", async () => {
+    const cli = new CLI();
+    const result = await cli.run(["fetch", "--output", "test.json", "--from", "2025-06-01", "--to", "2025-06-30", "--dry-run"]);
+    assertEquals(result.command, "fetch");
+    assertEquals(result.options?.from, "2025-06-01");
+    assertEquals(result.options?.to, "2025-06-30");
+  });
+
+  await t.step("fetchコマンドで不正な日付形式でエラーが発生すること", async () => {
+    const cli = new CLI();
+    const result = await cli.run(["fetch", "--output", "test.json", "--from", "2025/06/01"]);
+    assertEquals(result.success, false);
+    assertStringIncludes(result.error!, "日付形式が不正");
+    assertStringIncludes(result.error!, "YYYY-MM-DD");
+  });
+
+  await t.step("fetchコマンドで--fromのみ指定した場合もエラーにならないこと", async () => {
+    const cli = new CLI();
+    const result = await cli.run(["fetch", "--output", "test.json", "--from", "2025-06-01", "--dry-run"]);
+    assertEquals(result.command, "fetch");
+    assertEquals(result.options?.from, "2025-06-01");
+    assertEquals(result.options?.to, undefined);
   });
 });
 

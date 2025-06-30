@@ -97,27 +97,32 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   check-login              TaskChute Cloudへのログイン状態を確認します
   stats                    今日のタスクの統計情報を取得します
   save-html <file>         現在のページのHTMLを保存します
-  csv-test                 CSVエクスポート機能をテストします
-  csv-download             CSVファイルをダウンロードします
+  csv-test                 CSVエクスポート機能をテストします (--from, --toオプション対応)
+  csv-download             CSVファイルをダウンロードします (--from, --toオプション対応)
 
 オプション:
   --headless              ヘッドレスモードでブラウザを起動
   --browser <type>        使用するブラウザ (chromium, firefox, webkit)
   --timeout <ms>          タイムアウト時間（ミリ秒）
   --output <file>         出力ファイルパス
+  --from <date>           開始日付 (YYYY-MM-DD形式、fetch/csv系コマンドで使用)
+  --to <date>             終了日付 (YYYY-MM-DD形式、fetch/csv系コマンドで使用)
   --help                  このヘルプメッセージを表示
 
 例:
   taskchute-cli login
   taskchute-cli login --headless
   taskchute-cli fetch --output ./tasks.html
+  taskchute-cli fetch --output ./tasks.json --from 2025-06-01 --to 2025-06-30
   taskchute-cli fetch --output ./tasks.json --browser firefox
   taskchute-cli status
   taskchute-cli check-login
   taskchute-cli stats
   taskchute-cli save-html ./page.html
   taskchute-cli csv-test
+  taskchute-cli csv-test --from 2025-06-01 --to 2025-06-30
   taskchute-cli csv-download
+  taskchute-cli csv-download --from 2025-06-01 --to 2025-06-30
 `;
   }
 
@@ -181,6 +186,10 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         options.timeout = parseInt(args[++i]);
       } else if (arg === "--output") {
         options.output = args[++i];
+      } else if (arg === "--from") {
+        options.from = args[++i];
+      } else if (arg === "--to") {
+        options.to = args[++i];
       } else if (arg === "--dry-run") {
         options.dryRun = true;
       }
@@ -357,6 +366,19 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    */
   private async handleCSVTest(options: Record<string, any>): Promise<CLIResult> {
     try {
+      // 日付オプションの処理 (YYYY-MM-DD形式をYYYYMMDD形式に変換)
+      let fromDate: string | undefined;
+      let toDate: string | undefined;
+      
+      if (options.from || options.to) {
+        const convertDate = (dateStr: string): string => {
+          return dateStr.replace(/-/g, '');
+        };
+        
+        fromDate = options.from ? convertDate(options.from) : undefined;
+        toDate = options.to ? convertDate(options.to) : undefined;
+      }
+      
       // デバッグ用にheadlessモードを無効化
       this.fetcher.updateOptions({ headless: false });
       
@@ -368,7 +390,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       
       console.log("CSVエクスポートページをテスト中...");
 
-      const result = await this.fetcher.getTaskDataFromCSV();
+      const result = await this.fetcher.getTaskDataFromCSV(fromDate, toDate);
       if (!result.success) {
         return {
           success: false,
@@ -404,6 +426,19 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    */
   private async handleCSVDownload(options: Record<string, any>): Promise<CLIResult> {
     try {
+      // 日付オプションの処理 (YYYY-MM-DD形式をYYYYMMDD形式に変換)
+      let fromDate: string | undefined;
+      let toDate: string | undefined;
+      
+      if (options.from || options.to) {
+        const convertDate = (dateStr: string): string => {
+          return dateStr.replace(/-/g, '');
+        };
+        
+        fromDate = options.from ? convertDate(options.from) : undefined;
+        toDate = options.to ? convertDate(options.to) : undefined;
+      }
+      
       // ブラウザを起動
       const browserResult = await this.fetcher.launchBrowser();
       if (!browserResult.success) {
@@ -412,7 +447,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       
       console.log("TaskChuteからCSVファイルをダウンロード中...");
 
-      const result = await this.fetcher.getTaskDataFromCSV();
+      const result = await this.fetcher.getTaskDataFromCSV(fromDate, toDate);
       if (!result.success) {
         return {
           success: false,
@@ -441,6 +476,36 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   }
 
   /**
+   * 日付形式の検証を行う
+   * @param date 検証する日付文字列
+   * @returns 有効な日付形式かどうか
+   * @private
+   */
+  private isValidDateFormat(date: string): boolean {
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(date)) {
+      return false;
+    }
+    
+    // 実際の日付として有効かチェック
+    const dateObj = new Date(date);
+    return !isNaN(dateObj.getTime());
+  }
+
+  /**
+   * 現在の日付をYYYY-MM-DD形式で取得する
+   * @returns 現在の日付文字列
+   * @private
+   */
+  private getCurrentDateString(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
    * データ取得処理をハンドルする
    * @param options コマンドラインオプション
    * @returns CLIの実行結果
@@ -453,8 +518,22 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         throw new Error("--output オプションは必須です");
       }
 
+      // 日付オプションの処理
+      let fromDate = options.from || this.getCurrentDateString();
+      let toDate = options.to || this.getCurrentDateString();
+
+      // 日付形式のバリデーション
+      if (options.from && !this.isValidDateFormat(options.from)) {
+        throw new Error(`--from の日付形式が不正です: ${options.from} (YYYY-MM-DD形式で指定してください)`);
+      }
+      if (options.to && !this.isValidDateFormat(options.to)) {
+        throw new Error(`--to の日付形式が不正です: ${options.to} (YYYY-MM-DD形式で指定してください)`);
+      }
+
+      console.log(`[CLI] handleFetch: 日付範囲: ${fromDate} から ${toDate}`);
+
       console.log("[CLI] handleFetch: ページ遷移を開始");
-      await this.fetcher.navigateToTaskChute();
+      await this.fetcher.navigateToTaskChute(fromDate, toDate);
       console.log(`[CLI] handleFetch: ページ遷移完了。現在のURL: ${this.fetcher.getCurrentUrl()}`);
 
       console.log("[CLI] handleFetch: ログイン状態を確認");

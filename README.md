@@ -4,7 +4,7 @@ TaskChute Cloud連携CLIツール - ブラウザ自動化によるCSVエクス�
 
 ## 概要
 
-このCLIツールは、TaskChute CloudのCSVエクスポート機能をブラウザ自動化により実現します。Chrome プロファイルを利用したセッション永続化により、一度ログインすれば継続的にデータ取得が可能です。
+このCLIツールは、TaskChute CloudのCSVエクスポート機能をブラウザ自動化により実現します。Chrome プロファイルを利用したセッション永続化により、一度ログインすれば継続的にデータ取得が可能です。日付範囲を指定して、任意の期間のタスクデータを取得することができます。
 
 ## 特徴
 
@@ -55,10 +55,16 @@ deno task start login --headless
 deno task csv-download
 
 # 特定の日付範囲でCSVダウンロード
-deno task start csv-download --start 2025-06-01 --end 2025-06-30
+deno task start csv-download --from 2025-06-01 --to 2025-06-30
 
 # ヘッドレスモードでCSVダウンロード
 deno task start csv-download --headless
+
+# TaskChuteデータを取得してファイルに保存（HTML/JSON形式）
+deno task start fetch --output ./tasks.html
+
+# 特定の日付範囲でデータを取得
+deno task start fetch --output ./tasks.json --from 2025-06-01 --to 2025-06-30
 
 # ログイン状態確認
 deno task start status
@@ -81,6 +87,9 @@ deno task csv-download
 
 # CSVエクスポートページのテスト（ヘッドフルモード）
 deno task csv-test
+
+# 特定の日付範囲でCSVテスト
+deno task start csv-test --from 2025-06-01 --to 2025-06-30
 
 # カスタムChromeプロファイルを指定
 export TASKCHUTE_USER_DATA_DIR="/path/to/custom/chrome/profile"
@@ -196,6 +205,11 @@ CLIは以下の手順でTaskChute Cloudにログインします：
 TaskChute CloudのCSVエクスポートページからデータを自動取得します。
 
 #### 主な特徴
+
+- **日付範囲指定**: `--from`と`--to`オプションで任意の期間のデータを取得
+  - 形式: YYYY-MM-DD（例: 2025-06-01）
+  - 省略時は今日の日付を使用
+  - fetch, csv-download, csv-testコマンドで利用可能
 
 - **日付入力の完全対応**: Material-UI DatePickerへの4つの入力方法
   - fill()メソッド
@@ -322,6 +336,11 @@ channel: 'chrome' // 実際のChromeを使用
 MIT License
 
 ## 開発履歴
+
+- **v3.1.0**: 日付範囲指定機能の追加
+  - `--from`と`--to`オプションによる任意期間のデータ取得
+  - fetch, csv-download, csv-testコマンドで日付範囲指定が可能
+  - URLパラメータとCSVエクスポートの両方に対応
 
 - **v3.0.0**: CSVエクスポート機能の完全実装
   - Material-UI DatePicker対応（4つの入力方法）
