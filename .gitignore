@@ -1,3 +1,38 @@
 # Compiled binary
 taskchute-cli
 .aider.*
+
+# TaskChute関連
+.taskchute/
+tmp/
+
+# Chromeプロファイルのコピー
+chrome-profile-copy/
+chrome-profile/
+
+# テスト関連
+test-*.ts
+!tests/*.ts
+
+# デバッグファイル
+*.log
+*.png
+*.html
+
+# セッション・設定ファイル
+session.json
+config.json
+
+# 環境変数ファイル
+.env
+.env.local
+
+# OS関連
+.DS_Store
+Thumbs.db
+
+# エディタ関連
+.vscode/
+.idea/
+*.swp
+*.swo

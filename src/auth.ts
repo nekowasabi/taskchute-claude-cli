@@ -1,5 +1,6 @@
 import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
+import { detectPlatform, getBrowserLaunchOptions, checkChromeUserDataDir, logPlatformInfo } from "./platform.ts";
 
 /**
  * ログイン認証情報
@@ -38,7 +39,10 @@ export class TaskChuteAuth {
    * @param credentials ログイン認証情報
    */
   constructor(credentials: LoginCredentials) {
-    this.validateCredentials(credentials);
+    // Chromeプロファイルを使用する場合はバリデーションをスキップ
+    if (credentials.email !== "chrome-profile@example.com") {
+      this.validateCredentials(credentials);
+    }
     this.credentials = credentials;
     this.sessionPath = join(Deno.env.get("HOME") || ".", ".taskchute", "session.json");
   }
