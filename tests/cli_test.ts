@@ -99,3 +99,21 @@ Deno.test("CLI - statusコマンドのテスト", async (t) => {
     assertEquals(result.success, true);
   });
 });
+
+Deno.test("CLI - csv-downloadコマンドのテスト", async (t) => {
+  await t.step("csv-downloadコマンドが--outputオプションを認識すること", async () => {
+    const cli = new CLI();
+    const result = await cli.run(["csv-download", "--output", "./data", "--dry-run"]);
+    assertEquals(result.command, "csv-download");
+    assertEquals(result.options?.output, "./data");
+  });
+
+  await t.step("csv-downloadコマンドで--from, --to, --outputオプションが認識されること", async () => {
+    const cli = new CLI();
+    const result = await cli.run(["csv-download", "--from", "2026-01-01", "--to", "2026-01-08", "--output", "./backup", "--dry-run"]);
+    assertEquals(result.command, "csv-download");
+    assertEquals(result.options?.from, "2026-01-01");
+    assertEquals(result.options?.to, "2026-01-08");
+    assertEquals(result.options?.output, "./backup");
+  });
+});

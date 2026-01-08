@@ -98,7 +98,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   stats                    今日のタスクの統計情報を取得します
   save-html <file>         現在のページのHTMLを保存します
   csv-test                 CSVエクスポート機能をテストします (--from, --toオプション対応)
-  csv-download             CSVファイルをダウンロードします (--from, --toオプション対応)
+  csv-download             CSVファイルをダウンロードします (--from, --to, --outputオプション対応)
 
 オプション:
   --headless              ヘッドレスモードでブラウザを起動
@@ -123,6 +123,8 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   taskchute-cli csv-test --from 2025-06-01 --to 2025-06-30
   taskchute-cli csv-download
   taskchute-cli csv-download --from 2025-06-01 --to 2025-06-30
+  taskchute-cli csv-download --output ./data/exports
+  taskchute-cli csv-download --from 2026-01-01 --to 2026-01-08 --output ./backup
 `;
   }
 
@@ -429,25 +431,25 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       // 日付オプションの処理 (YYYY-MM-DD形式をYYYYMMDD形式に変換)
       let fromDate: string | undefined;
       let toDate: string | undefined;
-      
+
       if (options.from || options.to) {
         const convertDate = (dateStr: string): string => {
           return dateStr.replace(/-/g, '');
         };
-        
+
         fromDate = options.from ? convertDate(options.from) : undefined;
         toDate = options.to ? convertDate(options.to) : undefined;
       }
-      
+
       // ブラウザを起動
       const browserResult = await this.fetcher.launchBrowser();
       if (!browserResult.success) {
         return { success: false, command: "csv-download", error: browserResult.error };
       }
-      
+
       console.log("TaskChuteからCSVファイルをダウンロード中...");
 
-      const result = await this.fetcher.getTaskDataFromCSV(fromDate, toDate);
+      const result = await this.fetcher.getTaskDataFromCSV(fromDate, toDate, options.output);
       if (!result.success) {
         return {
           success: false,

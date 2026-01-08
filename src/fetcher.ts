@@ -459,9 +459,10 @@ export class TaskChuteDataFetcher {
    * CSVエクスポート機能を使用してタスクデータを取得する
    * @param fromDate 開始日付 (YYYYMMDD形式、省略時は今日)
    * @param toDate 終了日付 (YYYYMMDD形式、省略時は今日)
+   * @param downloadPath ダウンロードファイルを保存するディレクトリパス（省略時は tmp/claude）
    * @returns フェッチ結果
    */
-  async getTaskDataFromCSV(fromDate?: string, toDate?: string): Promise<FetchResult<TaskData[]>> {
+  async getTaskDataFromCSV(fromDate?: string, toDate?: string, downloadPath?: string): Promise<FetchResult<TaskData[]>> {
     if (!this.page) {
       const browserResult = await this.launchBrowser();
       if (!browserResult.success) {
@@ -826,7 +827,14 @@ export class TaskChuteDataFetcher {
             
             if (foundFile) {
               // ファイルを指定ディレクトリにコピー（.csv拡張子を付ける）
-              const targetPath = `tmp/claude/taskchute-export-${Date.now()}.csv`;
+              const targetDir = downloadPath || 'tmp/claude';
+
+              // ターゲットディレクトリが存在しない場合は作成
+              if (downloadPath) {
+                await ensureDir(downloadPath);
+              }
+
+              const targetPath = `${targetDir}/taskchute-export-${Date.now()}.csv`;
               await Deno.copyFile(foundFile, targetPath);
               console.log(`✅ CSVファイルをコピー: ${targetPath}`);
               
