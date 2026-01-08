@@ -112,6 +112,7 @@ Deno.test("validateChromePath - 存在しないパスの検証", async () => {
 Deno.test("getBrowserLaunchOptions - Mac環境", () => {
   const mockPlatformInfo = {
     isWSL: false,
+    isWSLg: false,
     isMac: true,
     isWindows: false,
     isLinux: false
@@ -123,9 +124,10 @@ Deno.test("getBrowserLaunchOptions - Mac環境", () => {
   assertEquals(options.executablePath, undefined);
 });
 
-Deno.test("getBrowserLaunchOptions - WSL環境", () => {
+Deno.test("getBrowserLaunchOptions - WSL環境（非WSLg）", () => {
   const mockPlatformInfo = {
     isWSL: true,
+    isWSLg: false,
     isMac: false,
     isWindows: false,
     isLinux: false,
@@ -134,17 +136,32 @@ Deno.test("getBrowserLaunchOptions - WSL環境", () => {
 
   const options = getBrowserLaunchOptions(mockPlatformInfo);
 
-  // WSLではexecutablePathが設定されるべき
-  assertExists(options.executablePath);
-  assertStringIncludes(options.executablePath!, "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe");
+  // WSL（非WSLg）ではChromiumを使用
+  assertEquals(options.channel, "chromium");
+  assertEquals(options.useExistingProfile, false);
+});
+
+Deno.test("getBrowserLaunchOptions - WSLg環境", () => {
+  const mockPlatformInfo = {
+    isWSL: true,
+    isWSLg: true,
+    isMac: false,
+    isWindows: false,
+    isLinux: false,
+    chromeUserDataDir: "/mnt/c/Users/testuser/AppData/Local/Google/Chrome/User Data"
+  };
+
+  const options = getBrowserLaunchOptions(mockPlatformInfo);
+
+  // WSLg環境ではLinux版Chromeを使用
+  assertEquals(options.channel, "chrome");
   assertEquals(options.useExistingProfile, true);
-  // channelはWSLでは使用しない（executablePathを使用）
-  assertEquals(options.channel, undefined);
 });
 
 Deno.test("getBrowserLaunchOptions - Windows環境", () => {
   const mockPlatformInfo = {
     isWSL: false,
+    isWSLg: false,
     isMac: false,
     isWindows: true,
     isLinux: false
@@ -158,6 +175,7 @@ Deno.test("getBrowserLaunchOptions - Windows環境", () => {
 Deno.test("getBrowserLaunchOptions - Linux環境", () => {
   const mockPlatformInfo = {
     isWSL: false,
+    isWSLg: false,
     isMac: false,
     isWindows: false,
     isLinux: true

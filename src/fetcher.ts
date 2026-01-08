@@ -215,10 +215,69 @@ export class TaskChuteDataFetcher {
             channel: launchOptions.channel,
             args: ['--no-first-run', '--no-default-browser-check']
           });
+        } else if (platformInfo.isWSLg) {
+          // WSLg環境: Linux版Google Chromeを使用
+          // WSLgによりGUIアプリケーションが動作可能
+          console.log("[Fetcher] WSLg環境: Linux版Google Chromeを使用します");
+
+          // Linux版Chromeのプロファイルディレクトリ
+          const chromeProfilePath = `${Deno.env.get("HOME")}/.taskchute/chrome-profile`;
+          await ensureDir(chromeProfilePath);
+          console.log(`[Fetcher] プロファイルパス: ${chromeProfilePath}`);
+
+          // Google自動化検出バイパス用の設定
+          // Playwrightはデフォルトで--enable-automationフラグを追加するが、
+          // これをGoogleが検出して「This browser or app may not be secure」エラーを表示する
+          // 対策: ignoreDefaultArgsで除外し、AutomationControlled機能を無効化
+          console.log("[Fetcher] Google自動化検出バイパスを有効化");
+
+          // Linux版Google Chromeを使用（channel: 'chrome'）
+          this.context = await browserLauncher.launchPersistentContext(chromeProfilePath, {
+            headless: this.options.headless,
+            timeout: this.options.timeout,
+            viewport: this.options.viewport,
+            channel: 'chrome', // Linux版Google Chromeを使用
+            // 自動化検出フラグを除外
+            ignoreDefaultArgs: ['--enable-automation'],
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-dev-shm-usage',
+              // Blink自動化検出機能を無効化
+              '--disable-blink-features=AutomationControlled',
+              // 追加のアンチ検出対策
+              '--disable-features=IsolateOrigins,site-per-process',
+              '--disable-infobars'
+            ],
+            acceptDownloads: true,
+            downloadsPath: `${Deno.env.get("HOME")}/Downloads`
+          });
+
+          this.browser = this.context.browser();
+          this.page = this.context.pages()[0] || await this.context.newPage();
+          console.log(`[Fetcher] Chrome起動成功。既存ページ数: ${this.context.pages().length}`);
+
+          // navigator.webdriverプロパティを偽装（Googleの自動化検出対策）
+          await this.page.addInitScript(() => {
+            // navigator.webdriverをundefinedに設定
+            Object.defineProperty(navigator, 'webdriver', {
+              get: () => undefined,
+            });
+            // さらにWebDriverプロパティも偽装
+            // @ts-ignore
+            delete navigator.__proto__.webdriver;
+          });
+          console.log("[Fetcher] navigator.webdriver偽装を設定");
+
+          // 保存されたCookieがあれば注入を試みる
+          const cookieResult = await this.injectSavedCookies();
+          if (cookieResult.success) {
+            console.log(`[Fetcher] 保存されたCookieを注入しました (${cookieResult.count}個)`);
+          }
         } else if (platformInfo.isWSL) {
-          // WSL環境: Playwrightの組み込みChromium（Linux版）を使用
+          // WSL（非WSLg）環境: Playwrightの組み込みChromium（Linux版）を使用
           // Windows側のChromeはWSL-Windows間の通信問題があるため使用しない
-          console.log("[Fetcher] WSL環境: Playwright組み込みChromiumを使用します");
+          console.log("[Fetcher] WSL環境（非WSLg）: Playwright組み込みChromiumを使用します");
 
           // WSL用のプロファイルディレクトリ（Linux側）
           const wslProfilePath = `${Deno.env.get("HOME")}/.taskchute/chromium-profile`;
@@ -244,10 +303,10 @@ export class TaskChuteDataFetcher {
           this.page = this.context.pages()[0] || await this.context.newPage();
           console.log(`[Fetcher] Chromium起動成功。既存ページ数: ${this.context.pages().length}`);
           // 保存されたCookieがあれば注入を試みる
-const cookieResult = await this.injectSavedCookies();
-if (cookieResult.success) {
-  console.log(`[Fetcher] 保存されたCookieを注入しました (${cookieResult.count}個)`);
-}
+          const cookieResult = await this.injectSavedCookies();
+          if (cookieResult.success) {
+            console.log(`[Fetcher] 保存されたCookieを注入しました (${cookieResult.count}個)`);
+          }
         } else {
           // その他の環境（Linux等）
           this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {

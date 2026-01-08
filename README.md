@@ -169,6 +169,102 @@ taskchute-claude-cli/
 }
 ```
 
+## WSL環境でのセットアップ
+
+WSL (Windows Subsystem for Linux) 環境でこのCLIツールを使用する場合、いくつかの追加設定が必要です。
+
+### 前提条件
+
+1. **WSLgが有効化されていることを確認**
+   - Windows 11以降またはWindows 10 21H2以降でWSLgが利用可能です
+   - WSL内からGUIアプリケーション（ブラウザ）を実行できる必要があります
+
+2. **Linux版Google Chromeのインストール**
+   - WSL環境でブラウザ自動化を実行するには、Linux版のGoogle Chromeが必要です
+   - Windows側のChromeではなく、WSL内にLinux版Chromeをインストールしてください
+
+### Linux版Google Chromeのインストール手順
+
+```bash
+# パッケージリストを更新
+sudo apt-get update
+
+# 依存パッケージをインストール
+sudo apt-get install -y wget gnupg
+
+# Google Chromeリポジトリキーを追加
+wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+
+# Google Chromeリポジトリを追加（Ubuntu/Debian）
+sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+
+# パッケージリストを再度更新
+sudo apt-get update
+
+# Google Chromeをインストール
+sudo apt-get install -y google-chrome-stable
+
+# インストール確認
+google-chrome --version
+```
+
+### 初回ログイン手順
+
+WSL環境では、初回ログイン時は非ヘッドレスモード（ブラウザUIが表示されるモード）で実行することを推奨します。これにより、Google 2段階認証などのインタラクティブな認証に対応できます。
+
+```bash
+# 非ヘッドレスモードでログイン
+TASKCHUTE_HEADLESS=false deno task start login
+
+# または
+TASKCHUTE_HEADLESS=false deno task login
+```
+
+ブラウザウィンドウが表示されたら、TaskChute CloudへのGoogleログインを手動で完了してください。ログインが完了すると、以降のCSVダウンロードはヘッドレスモードで実行可能になります。
+
+### その後のCSVダウンロード方法
+
+初回ログイン後は、以下のコマンドでCSVをダウンロード可能です：
+
+```bash
+# 今日のデータをダウンロード（ヘッドレスモード）
+deno task csv-download
+
+# 特定の日付範囲でダウンロード
+deno task start csv-download --from 2025-06-01 --to 2025-06-30
+
+# キャッシュされたChrome プロファイルを使用（セッション維持）
+# ～/.taskchute/chrome-profile-copy/ に保存されたプロファイルが自動的に使用されます
+```
+
+### トラブルシューティング（WSL環境）
+
+**ブラウザが起動しない場合**
+```bash
+# WSLgが有効になっているか確認
+echo $DISPLAY
+
+# DISPLAY が設定されていない場合、WSLg の再インストールが必要な場合があります
+```
+
+**Chrome プロファイルのロックエラーが発生する場合**
+```bash
+# Windows側とWSL側で同時にChromeを起動していないか確認
+# 同時起動はプロファイルロックの原因となります
+
+# 強制的に再スタートする場合はセッションを削除
+rm -rf ~/.taskchute/chrome-profile-copy/
+```
+
+**ヘッドレスモードで Google 2段階認証が失敗する場合**
+
+Windows側のChromeユーザープロファイルを利用する方法（トラブルシューティング参照）を使用してください：
+
+```bash
+export TASKCHUTE_USER_DATA_DIR="/mnt/c/Users/<Your-Username>/AppData/Local/Google/Chrome/User Data"
+deno task start login
+```
+
 ## セキュリティ
 
 - **認証情報の保護**: メール・パスワードは環境変数で管理

@@ -9,6 +9,7 @@
 
 export interface PlatformInfo {
   isWSL: boolean;
+  isWSLg: boolean;
   isMac: boolean;
   isWindows: boolean;
   isLinux: boolean;
@@ -30,9 +31,11 @@ export interface ChromePathValidation {
 export function detectPlatform(): PlatformInfo {
   const os = Deno.build.os;
   const isWSL = checkIfWSL();
-  
+  const isWSLg = isWSL && checkIfWSLg();
+
   const platformInfo: PlatformInfo = {
     isWSL,
+    isWSLg,
     isMac: os === "darwin",
     isWindows: os === "windows" && !isWSL,
     isLinux: os === "linux" && !isWSL,
@@ -72,6 +75,29 @@ function checkIfWSL(): boolean {
     // ファイルが読めない場合はWSLではない
     return false;
   }
+}
+
+/**
+ * WSLg環境かどうかを判定する
+ * WSLgが有効な場合、/mnt/wslgディレクトリが存在する
+ * 参考: https://learn.microsoft.com/ja-jp/windows/wsl/tutorials/gui-apps
+ */
+function checkIfWSLg(): boolean {
+  try {
+    // /mnt/wslgディレクトリの存在確認
+    const stat = Deno.statSync("/mnt/wslg");
+    if (stat.isDirectory) {
+      return true;
+    }
+  } catch {
+    // ディレクトリが存在しない場合
+  }
+
+  // 環境変数でも確認（WAYLAND_DISPLAYまたはDISPLAY）
+  const waylandDisplay = Deno.env.get("WAYLAND_DISPLAY");
+  const display = Deno.env.get("DISPLAY");
+
+  return !!(waylandDisplay || display);
 }
 
 /**
@@ -203,11 +229,20 @@ export function getBrowserLaunchOptions(platformInfo: PlatformInfo): {
       channel: 'chrome',
       useExistingProfile: true
     };
-  } else if (platformInfo.isWSL) {
-    // WSLではWindows側のChromeを使用
+  } else if (platformInfo.isWSLg) {
+    // WSLg環境: Linux版Google Chromeを使用
+    // WSLgによりGUIアプリケーションが動作可能
+    // 参考: https://learn.microsoft.com/ja-jp/windows/wsl/tutorials/gui-apps#install-google-chrome-for-linux
     return {
-      executablePath: '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+      channel: 'chrome',
       useExistingProfile: true
+    };
+  } else if (platformInfo.isWSL) {
+    // WSL（非WSLg）: Playwright組み込みChromiumを使用
+    // Windows側のChromeはWSL-Windows間の通信問題があるため使用しない
+    return {
+      channel: 'chromium',
+      useExistingProfile: false
     };
   } else {
     // Linuxの場合
@@ -227,6 +262,7 @@ export function logPlatformInfo(info: PlatformInfo): void {
   console.log(`  Mac: ${info.isMac ? "✓" : "✗"}`);
   console.log(`  Windows: ${info.isWindows ? "✓" : "✗"}`);
   console.log(`  WSL: ${info.isWSL ? "✓" : "✗"}`);
+  console.log(`  WSLg: ${info.isWSLg ? "✓" : "✗"}`);
   console.log(`  Linux: ${info.isLinux ? "✓" : "✗"}`);
   if (info.chromeUserDataDir) {
     console.log(`  Chrome User Data: ${info.chromeUserDataDir}`);
