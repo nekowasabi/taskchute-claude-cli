@@ -1,6 +1,10 @@
 /**
  * Chromeプロファイルマネージャー
- * MacのChromeプロファイルからセッション情報をコピーして使用
+ * Mac/WSLのChromeプロファイルからセッション情報をコピーして使用
+ *
+ * WSL対応:
+ * - Windows側のChromeプロファイルをWSLローカルにコピー
+ * - lockfile/SingletonLock問題を回避
  */
 
 import { ensureDir, copy } from "std/fs/mod.ts";
@@ -10,6 +14,7 @@ export interface ChromeProfileConfig {
   sourcePath: string;  // 元のChromeプロファイルパス
   targetPath: string;  // コピー先のパス
   profileName?: string; // 使用するプロファイル名（デフォルト: Default）
+  isWSL?: boolean;      // WSL環境かどうか
 }
 
 export class ChromeProfileManager {
@@ -17,11 +22,51 @@ export class ChromeProfileManager {
   
   constructor(config?: Partial<ChromeProfileConfig>) {
     const home = Deno.env.get("HOME") || ".";
+    const isWSL = config?.isWSL || false;
+
+    let defaultSourcePath: string;
+    let defaultTargetPath: string;
+
+    if (isWSL) {
+      // WSL環境: Windows側のChromeプロファイルを使用
+      const windowsUsername = this.detectWindowsUsername();
+      defaultSourcePath = windowsUsername
+        ? `/mnt/c/Users/${windowsUsername}/AppData/Local/Google/Chrome/User Data`
+        : `${home}/Library/Application Support/Google/Chrome`;
+      // WSL環境: コピー先もWindows側に配置（UNCパスでのファイルロック問題を回避）
+      defaultTargetPath = windowsUsername
+        ? `/mnt/c/Users/${windowsUsername}/AppData/Local/TaskChuteCLI/chrome-profile`
+        : `${home}/.taskchute/chrome-profile-copy`;
+    } else {
+      defaultSourcePath = `${home}/Library/Application Support/Google/Chrome`;
+      defaultTargetPath = `${home}/.taskchute/chrome-profile-copy`;
+    }
+
     this.config = {
-      sourcePath: config?.sourcePath || `${home}/Library/Application Support/Google/Chrome`,
-      targetPath: config?.targetPath || `${home}/.taskchute/chrome-profile-copy`,
-      profileName: config?.profileName || "Default"
+      sourcePath: config?.sourcePath || defaultSourcePath,
+      targetPath: config?.targetPath || defaultTargetPath,
+      profileName: config?.profileName || "Default",
+      isWSL: isWSL
     };
+  }
+
+  /**
+   * Windowsユーザー名を検出する（WSL環境用）
+   */
+  private detectWindowsUsername(): string | undefined {
+    try {
+      const usersPath = "/mnt/c/Users";
+      const entries = Deno.readDirSync(usersPath);
+      const excludedNames = new Set(["Public", "Default", "Default User", "All Users", "Administrator"]);
+      for (const entry of entries) {
+        if (entry.isDirectory && !excludedNames.has(entry.name)) {
+          return entry.name;
+        }
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
   }
   
   /**
@@ -78,7 +123,14 @@ export class ChromeProfileManager {
       } catch {
         // ファイルが存在しない場合は無視
       }
-      
+
+      // lockfileも削除（WSL環境で重要）
+      try {
+        await Deno.remove(join(this.config.targetPath, "lockfile"));
+      } catch {
+        // ファイルが存在しない場合は無視
+      }
+
       console.log("✅ プロファイルのコピーが完了しました");
       return { success: true, path: this.config.targetPath };
       

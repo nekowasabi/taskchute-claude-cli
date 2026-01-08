@@ -215,3 +215,58 @@ Deno.test("detectPlatform - WSL環境でchromeUserDataDirが自動設定され�
     assertStringIncludes(platform.chromeUserDataDir!, "Google\\Chrome\\User Data");
   }
 });
+
+// ============================================================
+// WSL環境でのパス変換テスト
+// ============================================================
+
+import { convertToWindowsPath } from "../src/platform.ts";
+
+Deno.test("convertToWindowsPath - LinuxパスをWindowsパスに変換（WSL環境）", async () => {
+  const platform = detectPlatform();
+
+  if (!platform.isWSL) {
+    console.log("WSL環境ではないため、このテストはスキップされます");
+    return;
+  }
+
+  const linuxPath = "/home/takets/.taskchute/chrome-profile-copy";
+  const result = await convertToWindowsPath(linuxPath);
+
+  assertExists(result, "変換結果が存在すべき");
+  // WSLからのUNCパス形式
+  assertStringIncludes(result!, "\\\\wsl");
+  console.log(`変換結果: ${linuxPath} -> ${result}`);
+});
+
+Deno.test("convertToWindowsPath - 非WSL環境では元のパスを返す", async () => {
+  const platform = detectPlatform();
+
+  if (platform.isWSL) {
+    console.log("WSL環境のため、このテストはスキップされます");
+    return;
+  }
+
+  const path = "/some/linux/path";
+  const result = await convertToWindowsPath(path);
+
+  // 非WSL環境では元のパスをそのまま返す
+  assertEquals(result, path);
+});
+
+Deno.test("convertToWindowsPath - Windows形式のパス（/mnt/c/...）も変換可能", async () => {
+  const platform = detectPlatform();
+
+  if (!platform.isWSL) {
+    console.log("WSL環境ではないため、このテストはスキップされます");
+    return;
+  }
+
+  const mntPath = "/mnt/c/Users/test/Documents";
+  const result = await convertToWindowsPath(mntPath);
+
+  assertExists(result, "変換結果が存在すべき");
+  // /mnt/c/は C:\ に変換されるはず
+  assertStringIncludes(result!, "C:\\");
+  console.log(`変換結果: ${mntPath} -> ${result}`);
+});

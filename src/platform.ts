@@ -151,10 +151,12 @@ export async function validateChromePath(
 export function getWSLChromeUserDataDir(
   username?: string
 ): string | undefined {
-  const platform = detectPlatform();
+  // 注意: detectPlatform()を呼び出すと相互再帰でスタックオーバーフローが発生する
+  // 直接checkIfWSL()を使用する
+  const isWSL = checkIfWSL();
 
   // WSL環境でない場合はundefinedを返す
-  if (!platform.isWSL) {
+  if (!isWSL) {
     return undefined;
   }
 
@@ -228,5 +230,45 @@ export function logPlatformInfo(info: PlatformInfo): void {
   console.log(`  Linux: ${info.isLinux ? "✓" : "✗"}`);
   if (info.chromeUserDataDir) {
     console.log(`  Chrome User Data: ${info.chromeUserDataDir}`);
+  }
+}
+
+/**
+ * WSL環境でLinuxパスをWindowsパスに変換する
+ * Windows Chrome.exeはLinuxパスを認識できないため、UNCパス形式に変換が必要
+ *
+ * @param linuxPath Linux形式のパス (例: /home/user/.taskchute/profile)
+ * @returns Windowsパス (例: \\wsl.localhost\Ubuntu\home\user\.taskchute\profile)
+ *          非WSL環境では元のパスをそのまま返す
+ */
+export async function convertToWindowsPath(linuxPath: string): Promise<string> {
+  // WSL環境でない場合は元のパスを返す
+  if (!checkIfWSL()) {
+    return linuxPath;
+  }
+
+  try {
+    // wslpath -w コマンドでLinuxパスをWindowsパスに変換
+    const command = new Deno.Command("wslpath", {
+      args: ["-w", linuxPath],
+      stdout: "piped",
+      stderr: "piped",
+    });
+
+    const { code, stdout, stderr } = await command.output();
+
+    if (code !== 0) {
+      const errorText = new TextDecoder().decode(stderr);
+      console.error(`wslpath変換エラー: ${errorText}`);
+      return linuxPath; // 変換失敗時は元のパスを返す
+    }
+
+    const windowsPath = new TextDecoder().decode(stdout).trim();
+    console.log(`[Platform] パス変換: ${linuxPath} -> ${windowsPath}`);
+    return windowsPath;
+
+  } catch (error) {
+    console.error(`wslpathコマンド実行エラー: ${(error as Error).message}`);
+    return linuxPath; // エラー時は元のパスを返す
   }
 }

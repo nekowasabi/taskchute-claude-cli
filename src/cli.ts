@@ -1,4 +1,5 @@
 // import { Command } from "gunshi"; // 削除 - シンプルなパーサーを使用
+import { CookieManager, displayCookieInfo } from "./cookie-manager.ts";
 import { TaskChuteAuth } from "./auth.ts";
 import { TaskChuteDataFetcher } from "./fetcher.ts";
 import { ConfigManager } from "./config.ts";
@@ -76,7 +77,7 @@ export class CLI {
    * @returns コマンド名の配列
    */
   getAvailableCommands(): string[] {
-    return ["login", "fetch", "status", "check-login", "stats", "save-html", "csv-test", "csv-download"];
+    return ["login", "fetch", "status", "check-login", "stats", "save-html", "csv-test", "csv-download", "import-cookies"];
   }
 
   /**
@@ -99,6 +100,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   save-html <file>         現在のページのHTMLを保存します
   csv-test                 CSVエクスポート機能をテストします (--from, --toオプション対応)
   csv-download             CSVファイルをダウンロードします (--from, --to, --outputオプション対応)
+  import-cookies <file>     Windows ChromeからエクスポートしたCookieをインポート
 
 オプション:
   --headless              ヘッドレスモードでブラウザを起動
@@ -163,6 +165,8 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         return await this.handleCSVTest(options);
       case "csv-download":
         return await this.handleCSVDownload(options);
+      case "import-cookies":
+        return await this.handleImportCookies(options);
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -194,6 +198,8 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         options.to = args[++i];
       } else if (arg === "--dry-run") {
         options.dryRun = true;
+      } else if (!arg.startsWith("--") && !options.file) {
+        options.file = arg;
       }
     }
     
@@ -596,6 +602,64 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     } finally {
       console.log("[CLI] handleFetch: 終了");
       await this.fetcher.cleanup();
+    }
+  }
+
+
+  /**
+   * Cookieインポート処理をハンドルする
+   * @param options コマンドラインオプション
+   * @returns CLIの実行結果
+   * @private
+   */
+  private async handleImportCookies(options: Record<string, any>): Promise<CLIResult> {
+    try {
+      if (!options.file) {
+        console.log(`
+Cookie インポートの手順:
+
+1. Windows ChromeでEditThisCookie拡張機能をインストール
+   https://chrome.google.com/webstore/detail/editthiscookie/fngmhnnpilhplaeedifhccceomclgfbg
+
+2. TaskChute Cloud (https://taskchute.cloud) にログイン
+
+3. EditThisCookieアイコンをクリックし、エクスポートボタン（JSONアイコン）をクリック
+
+4. 同様に accounts.google.com でもCookieをエクスポート
+
+5. エクスポートしたJSONを1つのファイルにまとめる
+   (配列を結合: [...taskchute_cookies, ...google_cookies])
+
+6. 以下のコマンドでインポート:
+   taskchute-cli import-cookies <cookies.json>
+`);
+        return { success: false, command: "import-cookies", error: "ファイルパスを指定してください" };
+      }
+
+      console.log(`Cookieファイルをインポート中: ${options.file}`);
+
+      const cookieManager = new CookieManager();
+      const result = await cookieManager.importCookiesFromFile(options.file);
+
+      if (!result.success) {
+        return { success: false, command: "import-cookies", error: result.error };
+      }
+
+      console.log(`
+インポート完了:
+  - Cookie数: ${result.cookieCount}
+  - ドメイン: ${result.domains?.join(", ")}
+
+次回のloginやcsv-downloadコマンド実行時にCookieが自動的に使用されます。
+`);
+
+      return { success: true, command: "import-cookies", data: result };
+    } catch (error) {
+      return {
+        success: false,
+        command: "import-cookies",
+        error: (error as Error).message,
+      };
     }
   }
 

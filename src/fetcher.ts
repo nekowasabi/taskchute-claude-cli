@@ -2,8 +2,10 @@ import { chromium, firefox, webkit, Browser, Page, BrowserContext } from "playwr
 import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
 import { LoginCredentials } from "./auth.ts";
-import { detectPlatform, getBrowserLaunchOptions } from "./platform.ts";
+import { detectPlatform, getBrowserLaunchOptions, convertToWindowsPath } from "./platform.ts";
 import { TaskChuteCsvParser } from "./csv-parser.ts";
+import { ChromeProfileManager } from "./chrome-profile-manager.ts";
+import { CookieManager, type PlaywrightCookie } from "./cookie-manager.ts";
 
 /**
  * Fetcherのオプション
@@ -80,6 +82,7 @@ export class TaskChuteDataFetcher {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private cookieManager: CookieManager = new CookieManager();
 
   /**
    * @param options Fetcherのオプション
@@ -111,6 +114,42 @@ export class TaskChuteDataFetcher {
    */
   getOptions(): Required<FetcherOptions> {
     return { ...this.options };
+  }
+
+  /**
+   * 保存されたCookieをContextに注入する
+   * @returns 注入結果
+   */
+  async injectSavedCookies(): Promise<{ success: boolean; error?: string; count?: number }> {
+    if (!this.context) {
+      return { success: false, error: "Browser context is not initialized" };
+    }
+
+    try {
+      const cookies = await this.cookieManager.loadSavedCookies();
+      if (!cookies || cookies.length === 0) {
+        return { success: false, error: "保存されたCookieがありません。import-cookiesコマンドでCookieをインポートしてください。" };
+      }
+
+      const expired = this.cookieManager.checkCookieExpiration(cookies);
+      if (expired.length > 0) {
+        console.log(`警告: 期限切れのCookieがあります: ${expired.join(", ")}`);
+      }
+
+      await this.cookieManager.injectCookies(this.context, cookies);
+      console.log(`${cookies.length}個のCookieを注入しました`);
+
+      return { success: true, count: cookies.length };
+    } catch (error) {
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * BrowserContextを取得（外部からのCookie操作用）
+   */
+  getContext(): BrowserContext | null {
+    return this.context;
   }
 
   /**
@@ -177,18 +216,38 @@ export class TaskChuteDataFetcher {
             args: ['--no-first-run', '--no-default-browser-check']
           });
         } else if (platformInfo.isWSL) {
-          // WSL環境: Windows側のChromeを使用
-          console.log("[Fetcher] WSL環境: Windows側のChromeを使用します");
+          // WSL環境: Playwrightの組み込みChromium（Linux版）を使用
+          // Windows側のChromeはWSL-Windows間の通信問題があるため使用しない
+          console.log("[Fetcher] WSL環境: Playwright組み込みChromiumを使用します");
 
-          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
+          // WSL用のプロファイルディレクトリ（Linux側）
+          const wslProfilePath = `${Deno.env.get("HOME")}/.taskchute/chromium-profile`;
+          await ensureDir(wslProfilePath);
+          console.log(`[Fetcher] プロファイルパス: ${wslProfilePath}`);
+
+          // Playwrightの組み込みChromiumを使用（Linux版）
+          this.context = await browserLauncher.launchPersistentContext(wslProfilePath, {
             headless: this.options.headless,
             timeout: this.options.timeout,
             viewport: this.options.viewport,
-            executablePath: launchOptions.executablePath,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-dev-shm-usage',
+              '--disable-gpu'
+            ],
             acceptDownloads: true,
             downloadsPath: `${Deno.env.get("HOME")}/Downloads`
           });
+
+          this.browser = this.context.browser();
+          this.page = this.context.pages()[0] || await this.context.newPage();
+          console.log(`[Fetcher] Chromium起動成功。既存ページ数: ${this.context.pages().length}`);
+          // 保存されたCookieがあれば注入を試みる
+const cookieResult = await this.injectSavedCookies();
+if (cookieResult.success) {
+  console.log(`[Fetcher] 保存されたCookieを注入しました (${cookieResult.count}個)`);
+}
         } else {
           // その他の環境（Linux等）
           this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
