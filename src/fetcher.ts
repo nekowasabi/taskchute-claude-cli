@@ -176,8 +176,21 @@ export class TaskChuteDataFetcher {
             channel: launchOptions.channel,
             args: ['--no-first-run', '--no-default-browser-check']
           });
+        } else if (platformInfo.isWSL) {
+          // WSL環境: Windows側のChromeを使用
+          console.log("[Fetcher] WSL環境: Windows側のChromeを使用します");
+
+          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
+            headless: this.options.headless,
+            timeout: this.options.timeout,
+            viewport: this.options.viewport,
+            executablePath: launchOptions.executablePath,
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            acceptDownloads: true,
+            downloadsPath: `${Deno.env.get("HOME")}/Downloads`
+          });
         } else {
-          // その他の環境（Linux、WSLなど）
+          // その他の環境（Linux等）
           this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
             headless: this.options.headless,
             timeout: this.options.timeout,

@@ -110,9 +110,8 @@ export class ConfigManager {
   /**
    * 同期的に設定を取得する（主に環境変数を反映させるため）
    * @returns 設定オブジェクト
-   * @private
    */
-  private getConfigSync(): Config {
+  getConfigSync(): Config {
     // 環境変数から設定を取得（実行時に毎回チェック）
     return {
       auth: {
@@ -125,7 +124,10 @@ export class ConfigManager {
         browser: (Deno.env.get("TASKCHUTE_BROWSER") as any) || this.defaultConfig.fetcher.browser,
         timeout: parseInt(Deno.env.get("TASKCHUTE_TIMEOUT") || "") || this.defaultConfig.fetcher.timeout,
         viewport: this.defaultConfig.fetcher.viewport,
-        userDataDir: Deno.env.get("TASKCHUTE_USER_DATA_DIR") || this.defaultConfig.fetcher.userDataDir
+        // TASKCHUTE_CHROME_PATH環境変数をサポート（WSL対応）
+        userDataDir: Deno.env.get("TASKCHUTE_CHROME_PATH") ||
+                     Deno.env.get("TASKCHUTE_USER_DATA_DIR") ||
+                     this.defaultConfig.fetcher.userDataDir
       },
       general: {
         defaultOutputDir: Deno.env.get("TASKCHUTE_OUTPUT_DIR") || this.defaultConfig.general.defaultOutputDir,

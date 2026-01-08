@@ -1,5 +1,10 @@
 /**
  * プラットフォーム判定とChrome設定のユーティリティ
+ *
+ * WSL互換性対応:
+ * - Windowsユーザー名の自動検出
+ * - Chromeパスの検証
+ * - WSL専用のブラウザ起動オプション
  */
 
 export interface PlatformInfo {
@@ -8,6 +13,15 @@ export interface PlatformInfo {
   isWindows: boolean;
   isLinux: boolean;
   chromeUserDataDir?: string;
+}
+
+/**
+ * Chrome実行パスの検証結果
+ */
+export interface ChromePathValidation {
+  valid: boolean;
+  error?: string;
+  path?: string;
 }
 
 /**
@@ -34,9 +48,9 @@ export function detectPlatform(): PlatformInfo {
     }
   } else if (platformInfo.isWSL) {
     // WSLの場合、Windows側のChromeプロファイルを使用可能
-    const windowsUsername = Deno.env.get("WINDOWS_USERNAME");
-    if (windowsUsername) {
-      platformInfo.chromeUserDataDir = `/mnt/c/Users/${windowsUsername}/AppData/Local/Google/Chrome/User Data`;
+    const userDataDir = getWSLChromeUserDataDir();
+    if (userDataDir) {
+      platformInfo.chromeUserDataDir = userDataDir;
     }
   } else if (platformInfo.isLinux) {
     platformInfo.chromeUserDataDir = `${Deno.env.get("HOME")}/.config/google-chrome`;
@@ -52,12 +66,109 @@ function checkIfWSL(): boolean {
   try {
     // /proc/versionファイルの内容でWSLを判定
     const procVersion = Deno.readTextFileSync("/proc/version");
-    return procVersion.toLowerCase().includes("microsoft") || 
+    return procVersion.toLowerCase().includes("microsoft") ||
            procVersion.toLowerCase().includes("wsl");
   } catch {
     // ファイルが読めない場合はWSLではない
     return false;
   }
+}
+
+/**
+ * Windowsユーザー名を検出する
+ * 優先順位:
+ * 1. 環境変数WINDOWS_USERNAME
+ * 2. /mnt/c/Users/配下のスキャン（最初のユーザーディレクトリ）
+ * @returns ユーザー名またはundefined
+ */
+export function detectWindowsUsername(): string | undefined {
+  // 環境変数を優先
+  const envUsername = Deno.env.get("WINDOWS_USERNAME");
+  if (envUsername) {
+    return envUsername;
+  }
+
+  // WSL環境でない場合はundefinedを返す
+  if (!checkIfWSL()) {
+    return undefined;
+  }
+
+  // /mnt/c/Users配下をスキャン
+  try {
+    const usersPath = "/mnt/c/Users";
+    const entries = Deno.readDirSync(usersPath);
+
+    // 除外対象のディレクトリ名
+    const excludedNames = new Set([
+      "Public",
+      "Default",
+      "Default User",
+      "All Users",
+      "Administrator"
+    ]);
+
+    for (const entry of entries) {
+      if (entry.isDirectory && !excludedNames.has(entry.name)) {
+        // 見つかった最初のユーザーディレクトリを返す
+        return entry.name;
+      }
+    }
+
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Chrome実行パスを検証する
+ * @param path 検証するパス
+ * @returns 検証結果
+ */
+export async function validateChromePath(
+  path: string
+): Promise<ChromePathValidation> {
+  try {
+    const stat = await Deno.stat(path);
+    if (stat.isFile) {
+      return { valid: true, path };
+    } else {
+      return { valid: false, error: `パスはファイルではなくディレクトリです: ${path}` };
+    }
+  } catch (error) {
+    return {
+      valid: false,
+      error: `Chromeパスの検証に失敗しました: ${(error as Error).message}`
+    };
+  }
+}
+
+/**
+ * WSLでのChrome User Dataディレクトリを取得
+ * @param username Windowsユーザー名（省略可）
+ * @returns Chrome User Dataディレクトリパスまたはundefined
+ */
+export function getWSLChromeUserDataDir(
+  username?: string
+): string | undefined {
+  const platform = detectPlatform();
+
+  // WSL環境でない場合はundefinedを返す
+  if (!platform.isWSL) {
+    return undefined;
+  }
+
+  // ユーザー名が指定されていない場合は自動検出
+  let targetUsername = username;
+  if (!targetUsername) {
+    targetUsername = detectWindowsUsername();
+  }
+
+  if (!targetUsername) {
+    return undefined;
+  }
+
+  return `/mnt/c/Users/${targetUsername}/AppData/Local/Google/Chrome/User Data`;
 }
 
 /**
