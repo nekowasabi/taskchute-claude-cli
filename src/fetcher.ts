@@ -242,10 +242,14 @@ export class TaskChuteDataFetcher {
         console.log(`[Fetcher] 日付範囲指定のURLへ遷移: ${url}`);
       }
 
+      // React SPAではnetworkidleは到達しないため、domcontentloadedを使用
       await this.page!.goto(url, {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeout: this.options.timeout
       });
+
+      // Reactコンポーネントのレンダリング完了を待機
+      await this.waitForReactReady();
 
       const currentUrl = this.page!.url();
       return { success: true, currentUrl };
@@ -253,6 +257,30 @@ export class TaskChuteDataFetcher {
     } catch (error) {
       return { success: false, error: (error as Error).message };
     }
+  }
+
+  /**
+   * Reactコンポーネントのレンダリング完了を待機する
+   * React SPAではnetworkidleが到達しないため、個別に待機する
+   */
+  private async waitForReactReady(): Promise<void> {
+    if (!this.page) return;
+
+    // スケルトンローダーの消失を待機
+    try {
+      await this.page.waitForSelector('.MuiSkeleton-root', {
+        state: 'hidden',
+        timeout: 10000
+      });
+    } catch {
+      // スケルトンがない場合は無視
+    }
+
+    // DOMの安定化を待機
+    await this.page.waitForLoadState('load');
+
+    // 追加の安定化待機（Reactの非同期レンダリング完了のため）
+    await this.page.waitForTimeout(1000);
   }
 
   /**
@@ -307,10 +335,14 @@ export class TaskChuteDataFetcher {
     }
 
     try {
+      // React SPAではnetworkidleは到達しないため、domcontentloadedを使用
       await this.page!.goto("https://taskchute.cloud/taskchute", {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeout: this.options.timeout,
       });
+
+      // Reactコンポーネントのレンダリング完了を待機
+      await this.waitForReactReady();
 
       // ログイン後のダッシュボードに表示される要素を確認
       const loggedInElement = await this.page!.waitForSelector(
@@ -427,12 +459,14 @@ export class TaskChuteDataFetcher {
     try {
       // Step 1: TaskChuteページにアクセスしてログイン確認
       console.log("Step 1: TaskChuteページでログイン確認...");
+      // React SPAではnetworkidleは到達しないため、domcontentloadedを使用
       await this.page!.goto("https://taskchute.cloud/taskchute", {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeout: this.options.timeout
       });
-      
-      await this.page!.waitForTimeout(2000);
+
+      // Reactコンポーネントのレンダリング完了を待機
+      await this.waitForReactReady();
       console.log("TaskChuteページのURL:", this.page!.url());
       
       // ログイン状況を確認
@@ -445,14 +479,14 @@ export class TaskChuteDataFetcher {
 
       // Step 2: CSVエクスポートページに移動
       console.log("Step 2: CSVエクスポートページに移動中...");
+      // React SPAではnetworkidleは到達しないため、domcontentloadedを使用
       await this.page!.goto("https://taskchute.cloud/export/csv-export", {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeout: this.options.timeout
       });
 
-      // ページ読み込み待機
-      await this.page!.waitForLoadState('networkidle');
-      await this.page!.waitForTimeout(3000);
+      // Reactコンポーネントのレンダリング完了を待機
+      await this.waitForReactReady();
 
       const currentUrl = this.page!.url();
       console.log("CSVエクスポートページのURL:", currentUrl);
@@ -529,165 +563,125 @@ export class TaskChuteDataFetcher {
       console.log(`エクスポート関連要素数: ${exportRelatedElements.length}`);
 
       // Step 5: 日付範囲フォームの確認と入力
-      console.log("Step 5: 日付範囲フォームを確認中...");
-      
-      // より広範囲の日付入力フィールドを検索
-      const allInputs = await this.page!.locator('input').all();
-      console.log(`全入力フィールド数: ${allInputs.length}`);
-      
-      const dateInputs = [];
-      for (let i = 0; i < allInputs.length; i++) {
-        const input = allInputs[i];
-        const placeholder = await input.getAttribute('placeholder');
-        const value = await input.getAttribute('value');
-        const type = await input.getAttribute('type');
-        
-        console.log(`入力フィールド${i}: type="${type}", placeholder="${placeholder}", value="${value}"`);
-        
-        // YYYY/MM/DD形式のプレースホルダーや日付関連の入力フィールドを特定
-        if (placeholder?.includes('YYYY') || placeholder?.includes('MM') || placeholder?.includes('DD') ||
-            type === 'date' || placeholder?.includes('/')) {
-          dateInputs.push({ input, placeholder, value, type, index: i });
-        }
-      }
-      
-      console.log(`日付入力フィールド数: ${dateInputs.length}`);
-      
-      if (dateInputs.length >= 2) {
-        // 日付が指定されていない場合は今日の日付を使用
-        const today = new Date();
-        const defaultDate = today.getFullYear().toString() + 
-                          (today.getMonth() + 1).toString().padStart(2, '0') + 
-                          today.getDate().toString().padStart(2, '0');
-        
-        const startDate = fromDate || defaultDate;
-        const endDate = toDate || defaultDate;
-        
-        console.log(`設定する日付 - 開始: ${startDate}, 終了: ${endDate}`);
-        
+      console.log("Step 5: MUI DateRangePickerを使用して日付を入力...");
+
+      // MUI DateRangePickerはspinbutton role要素を使用（input要素ではない）
+      // data-range-position="start" / "end" で開始・終了を区別
+      // aria-label で「年」「月」「日」を識別
+
+      // 日付が指定されていない場合は今日の日付を使用
+      const today = new Date();
+      const defaultDate = today.getFullYear().toString() +
+                        (today.getMonth() + 1).toString().padStart(2, '0') +
+                        today.getDate().toString().padStart(2, '0');
+
+      const startDate = fromDate || defaultDate;
+      const endDate = toDate || defaultDate;
+
+      // YYYYMMDD形式を年/月/日に分解
+      const startYear = startDate.substring(0, 4);
+      const startMonth = startDate.substring(4, 6);
+      const startDay = startDate.substring(6, 8);
+      const endYear = endDate.substring(0, 4);
+      const endMonth = endDate.substring(4, 6);
+      const endDay = endDate.substring(6, 8);
+
+      console.log(`設定する日付 - 開始: ${startYear}/${startMonth}/${startDay}, 終了: ${endYear}/${endMonth}/${endDay}`);
+
+      try {
+        // 開始日の年/月/日をそれぞれ入力
+        console.log("開始日を入力中...");
+
+        // 開始日の年フィールドを取得して入力
+        const startYearField = this.page!.locator('[role="spinbutton"][data-range-position="start"][aria-label="年"]');
+        await startYearField.click();
+        await this.page!.waitForTimeout(100);
+        await this.page!.keyboard.type(startYear);
+        await this.page!.waitForTimeout(100);
+
+        // 開始日の月フィールドを取得して入力
+        const startMonthField = this.page!.locator('[role="spinbutton"][data-range-position="start"][aria-label="月"]');
+        await startMonthField.click();
+        await this.page!.waitForTimeout(100);
+        await this.page!.keyboard.type(startMonth);
+        await this.page!.waitForTimeout(100);
+
+        // 開始日の日フィールドを取得して入力
+        const startDayField = this.page!.locator('[role="spinbutton"][data-range-position="start"][aria-label="日"]');
+        await startDayField.click();
+        await this.page!.waitForTimeout(100);
+        await this.page!.keyboard.type(startDay);
+        await this.page!.waitForTimeout(500);
+
+        console.log("終了日を入力中...");
+
+        // 終了日の年フィールドを取得して入力
+        const endYearField = this.page!.locator('[role="spinbutton"][data-range-position="end"][aria-label="年"]');
+        await endYearField.click();
+        await this.page!.waitForTimeout(100);
+        await this.page!.keyboard.type(endYear);
+        await this.page!.waitForTimeout(100);
+
+        // 終了日の月フィールドを取得して入力
+        const endMonthField = this.page!.locator('[role="spinbutton"][data-range-position="end"][aria-label="月"]');
+        await endMonthField.click();
+        await this.page!.waitForTimeout(100);
+        await this.page!.keyboard.type(endMonth);
+        await this.page!.waitForTimeout(100);
+
+        // 終了日の日フィールドを取得して入力
+        const endDayField = this.page!.locator('[role="spinbutton"][data-range-position="end"][aria-label="日"]');
+        await endDayField.click();
+        await this.page!.waitForTimeout(100);
+        await this.page!.keyboard.type(endDay);
+        await this.page!.waitForTimeout(500);
+
+        // 入力値を確認
+        const startYearValue = await startYearField.textContent();
+        const startMonthValue = await startMonthField.textContent();
+        const startDayValue = await startDayField.textContent();
+        const endYearValue = await endYearField.textContent();
+        const endMonthValue = await endMonthField.textContent();
+        const endDayValue = await endDayField.textContent();
+
+        console.log(`入力確認 - 開始: ${startYearValue}/${startMonthValue}/${startDayValue}, 終了: ${endYearValue}/${endMonthValue}/${endDayValue}`);
+
+        console.log("日付入力処理完了");
+
+        // 日付ピッカーのポップアップを閉じるため、ページの他の場所をクリック
+        console.log("日付ピッカーを閉じるため、ページをクリック...");
+        await this.page!.click('body', { position: { x: 10, y: 10 } });
+        await this.page!.waitForTimeout(1000);
+
+        // ダウンロードボタンが有効になるまで待機
+        console.log("ダウンロードボタンが有効になるまで待機中...");
         try {
-          // Phase 1: fill()メソッドを使用した日付入力（優先順位1）
-          console.log("Phase 1: fill()メソッドで日付を入力中...");
-          
-          // 開始日を入力（最初の日付フィールド）
-          console.log("開始日を入力中...");
-          await dateInputs[0].input.click();
-          await dateInputs[0].input.fill(startDate);
-          await this.page!.waitForTimeout(500);
-          
-          // 終了日を入力（2番目の日付フィールド）  
-          console.log("終了日を入力中...");
-          await dateInputs[1].input.click();
-          await dateInputs[1].input.fill(endDate);
-          await this.page!.waitForTimeout(1000);
-          
-          // 入力値を確認
-          let startValue = await dateInputs[0].input.inputValue();
-          let endValue = await dateInputs[1].input.inputValue();
-          console.log(`入力確認（fill後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
-          
-          // fill()メソッドが失敗した場合、keyboard操作を試行（優先順位2）
-          if (!startValue || !endValue || startValue === "" || endValue === "") {
-            console.log("fill()メソッドが失敗。keyboard操作を試行中...");
-            
-            // 開始日をkeyboard操作で入力
-            await dateInputs[0].input.click();
-            await this.page!.keyboard.press('Control+a');
-            await this.page!.keyboard.type(startDate);
-            await this.page!.waitForTimeout(500);
-            
-            // 終了日をkeyboard操作で入力
-            await dateInputs[1].input.click();
-            await this.page!.keyboard.press('Control+a');
-            await this.page!.keyboard.type(endDate);
-            await this.page!.waitForTimeout(1000);
-            
-            // 再度入力値を確認
-            startValue = await dateInputs[0].input.inputValue();
-            endValue = await dateInputs[1].input.inputValue();
-            console.log(`入力確認（keyboard後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
-          }
-          
-          // それでも失敗した場合、フィールドクリア + 入力を試行（優先順位3）
-          if (!startValue || !endValue || startValue === "" || endValue === "") {
-            console.log("keyboard操作が失敗。フィールドクリア + 入力を試行中...");
-            
-            // 開始日
-            await dateInputs[0].input.click();
-            await dateInputs[0].input.fill('');
-            await dateInputs[0].input.type(startDate);
-            await this.page!.waitForTimeout(500);
-            
-            // 終了日
-            await dateInputs[1].input.click();
-            await dateInputs[1].input.fill('');
-            await dateInputs[1].input.type(endDate);
-            await this.page!.waitForTimeout(1000);
-            
-            // 再度入力値を確認
-            startValue = await dateInputs[0].input.inputValue();
-            endValue = await dateInputs[1].input.inputValue();
-            console.log(`入力確認（クリア後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
-          }
-          
-          // 最終手段: evaluateを使った直接DOM操作（優先順位4）
-          if (!startValue || !endValue || startValue === "" || endValue === "") {
-            console.log("通常の入力方法が失敗。evaluateで直接DOM操作を試行中...");
-            
-            // 開始日の直接設定
-            await dateInputs[0].input.evaluate((el: HTMLInputElement, value: string) => {
-              el.value = value;
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, startDate);
-            await this.page!.waitForTimeout(500);
-            
-            // 終了日の直接設定
-            await dateInputs[1].input.evaluate((el: HTMLInputElement, value: string) => {
-              el.value = value;
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, endDate);
-            await this.page!.waitForTimeout(1000);
-            
-            // 最終確認
-            startValue = await dateInputs[0].input.inputValue();
-            endValue = await dateInputs[1].input.inputValue();
-            console.log(`入力確認（evaluate後） - 開始日: "${startValue}", 終了日: "${endValue}"`);
-          }
-          
-          console.log("日付入力処理完了");
-          
-          // 日付ピッカーのツールチップを閉じるため、ページの他の場所をクリック
-          console.log("日付ピッカーを閉じるため、ページをクリック...");
-          await this.page!.click('body', { position: { x: 10, y: 10 } });
-          await this.page!.waitForTimeout(1000);
-          
-          // ダウンロードボタンが有効になるまで待機
-          console.log("ダウンロードボタンが有効になるまで待機中...");
-          try {
-            await this.page!.waitForSelector('button:has-text("ダウンロード"):not(.Mui-disabled)', { timeout: 10000 });
-            console.log("ダウンロードボタンが有効になりました");
-          } catch (error) {
-            console.log("ダウンロードボタンの有効化待機がタイムアウトしました:", error);
-            // デバッグ情報を追加
-            const buttonState = await this.page!.locator('button:has-text("ダウンロード")').first().evaluate((el) => {
-              return {
-                disabled: (el as HTMLButtonElement).disabled,
-                classList: Array.from(el.classList),
-                ariaDisabled: el.getAttribute('aria-disabled')
-              };
-            });
-            console.log("ダウンロードボタンの状態:", buttonState);
-          }
-          
+          await this.page!.waitForSelector('button:has-text("ダウンロード"):not(.Mui-disabled)', { timeout: 10000 });
+          console.log("ダウンロードボタンが有効になりました");
         } catch (error) {
-          console.error("日付入力エラー:", error);
-          // エラー時のデバッグ情報を保存
-          const debugPath = `tmp/claude/date-input-error-${Date.now()}.png`;
+          console.log("ダウンロードボタンの有効化待機がタイムアウトしました");
+          // デバッグ情報を追加
+          const buttonState = await this.page!.locator('button:has-text("ダウンロード")').first().evaluate((el) => {
+            return {
+              disabled: (el as HTMLButtonElement).disabled,
+              classList: Array.from(el.classList),
+              ariaDisabled: el.getAttribute('aria-disabled')
+            };
+          });
+          console.log("ダウンロードボタンの状態:", buttonState);
+
+          // スクリーンショットを保存
+          const debugPath = `tmp/claude/button-disabled-${Date.now()}.png`;
           await this.page!.screenshot({ path: debugPath, fullPage: true });
-          console.log(`エラー時のスクリーンショット: ${debugPath}`);
+          console.log(`デバッグスクリーンショット: ${debugPath}`);
         }
+
+      } catch (error) {
+        console.error("日付入力エラー:", error);
+        // エラー時のデバッグ情報を保存
+        const debugPath = `tmp/claude/date-input-error-${Date.now()}.png`;
+        await this.page!.screenshot({ path: debugPath, fullPage: true });
+        console.log(`エラー時のスクリーンショット: ${debugPath}`);
       }
 
       // Step 6: ダウンロードボタンをクリック

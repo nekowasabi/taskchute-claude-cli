@@ -9,6 +9,8 @@
     "fetch": "deno run --allow-all src/main.ts fetch",
     "stats": "deno run --allow-all src/main.ts stats",
     "save-html": "deno run --allow-all src/main.ts save-html",
+    "csv-download": "deno run --allow-all src/main.ts csv-download",
+    "csv-test": "deno run --allow-all src/main.ts csv-test",
     "build": "deno compile --allow-all --output taskchute-cli src/main.ts"
   },
   "imports": {
