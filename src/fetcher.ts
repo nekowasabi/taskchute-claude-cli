@@ -952,7 +952,8 @@ export class TaskChuteDataFetcher {
                 await ensureDir(downloadPath);
               }
 
-              const targetPath = `${targetDir}/taskchute-export-${Date.now()}.csv`;
+              // ファイル名を生成（YYYYMMDD形式をそのまま使用）
+              const targetPath = `${targetDir}/tasks_${startDate}_${endDate}.csv`;
               await Deno.copyFile(foundFile, targetPath);
               console.log(`✅ CSVファイルをコピー: ${targetPath}`);
               
@@ -992,12 +993,13 @@ export class TaskChuteDataFetcher {
               try {
                 const download = await this.page!.waitForEvent('download', { timeout: 10000 });
                 console.log(`ダウンロードイベントを検出: ${download.suggestedFilename()}`);
-                
-                const downloadPath = `tmp/claude/${download.suggestedFilename() || 'taskchute-export.csv'}`;
-                await download.saveAs(downloadPath);
-                console.log(`CSVファイルを保存: ${downloadPath}`);
-                
-                return { success: true, tasks: [], downloadPath };
+
+                // ファイル名を生成（YYYYMMDD形式をそのまま使用）
+                const fallbackPath = `tmp/claude/tasks_${startDate}_${endDate}.csv`;
+                await download.saveAs(fallbackPath);
+                console.log(`CSVファイルを保存: ${fallbackPath}`);
+
+                return { success: true, tasks: [], downloadPath: fallbackPath };
               } catch (downloadError) {
                 console.error("ダウンロードイベントの待機でエラー:", downloadError);
                 throw new Error("CSVファイルのダウンロードに失敗しました");
