@@ -167,6 +167,86 @@ export class TaskChuteDataFetcher {
         // ディレクトリが存在しない場合は作成
         await ensureDir(profilePath);
 
+        // CDP ポートが指定されている場合、起動前にポート解放を待機
+        // Why: 連続実行時に前回の Chrome が使用した TCP ポートが TIME_WAIT 状態（約60秒）で残り、
+        //      同じポートで Chrome を再起動するとバインドに失敗してタイムアウトする。
+        //      WSLg では固定 cdpPort のみ動作するため、ポート解放を待つ必要がある。
+        if (launchConfig.cdpPort && launchConfig.cdpPort > 0) {
+          const port = launchConfig.cdpPort;
+          const maxWaitMs = 65000; // TIME_WAIT は通常60秒
+          const intervalMs = 2000;
+          const startTime = Date.now();
+          let portAvailable = false;
+          while (Date.now() - startTime < maxWaitMs) {
+            try {
+              const listener = Deno.listen({ port, hostname: "127.0.0.1" });
+              listener.close();
+              portAvailable = true;
+              break;
+            } catch {
+              const elapsed = Math.round((Date.now() - startTime) / 1000);
+              console.log(`[DEBUG] Port ${port} is busy (TIME_WAIT), waiting... (${elapsed}s)`);
+              await new Promise((r) => setTimeout(r, intervalMs));
+            }
+          }
+          if (!portAvailable) {
+            console.log(`[DEBUG] WARNING: Port ${port} still busy after ${maxWaitMs / 1000}s, attempting launch anyway`);
+          }
+        }
+
+        // ブラウザ起動前にロック関連ファイルをクリーンアップ
+        // Why: 前回の起動が異常終了した場合、SingletonLock や DevToolsActivePort が残留し
+        //      launchPersistentContext が古い情報で接続を試みてタイムアウトする。
+        //      特に WSLg 環境では cdpPort:9222 固定のため、残留ファイルが2回目以降の起動を妨げる。
+        const lockFilesToClean = [
+          `${profilePath}/SingletonLock`,
+          `${profilePath}/SingletonCookie`,
+          `${profilePath}/SingletonSocket`,
+          `${profilePath}/DevToolsActivePort`,
+          `${profilePath}/Default/LOCK`,
+        ];
+        // プロファイルの非認証データを全削除
+        // Why: Chrome がヘッドレスモードでセッション復元・Service Worker・キャッシュ等を
+        //      処理しようとすると Playwright の launchPersistentContext がハングする。
+        //      認証情報（Cookies, Local Storage）のみ保持し、それ以外を毎回クリーンアップする。
+        const defaultDir = `${profilePath}/Default`;
+        const preserveFiles = new Set([
+          "Cookies",
+          "Cookies-journal",
+          "Local Storage",
+          "Session Storage",
+          "IndexedDB",
+          "Login Data",
+          "Login Data-journal",
+          "Preferences",
+          "Secure Preferences",
+          "Web Data",
+          "Web Data-journal",
+        ]);
+        try {
+          for await (const entry of Deno.readDir(defaultDir)) {
+            if (!preserveFiles.has(entry.name)) {
+              const fullPath = `${defaultDir}/${entry.name}`;
+              try {
+                await Deno.remove(fullPath, { recursive: true });
+              } catch {
+                // 一部のファイルは削除できない場合がある（使用中等）
+              }
+            }
+          }
+          console.log(`[DEBUG] Profile cleaned (preserved: ${[...preserveFiles].join(", ")})`);
+        } catch {
+          // Default ディレクトリが存在しない場合は無視
+        }
+        for (const f of lockFilesToClean) {
+          try {
+            await Deno.remove(f);
+            console.log(`[DEBUG] Removed lock file: ${f}`);
+          } catch {
+            // ファイルが存在しない場合は無視
+          }
+        }
+
         // launchPersistentContext オプションを組み立て
         const contextOptions: Record<string, unknown> = {
           headless: this.options.headless,
@@ -194,15 +274,41 @@ export class TaskChuteDataFetcher {
         }
 
         browserLauncher = chromium;
-        this.context = await browserLauncher.launchPersistentContext(
-          profilePath,
-          contextOptions as Parameters<
-            typeof browserLauncher.launchPersistentContext
-          >[1],
-        );
 
-        this.browser = this.context.browser();
-        this.page = this.context.pages()[0] || await this.context.newPage();
+        // リトライ付き launchPersistentContext
+        // Why: WSLg 環境では launchPersistentContext が非決定的にタイムアウトする。
+        //      Chrome は起動し WS 接続も成功するが、Playwright の内部初期化が完了しない。
+        //      リトライすることで2回目以降に成功するパターンが確認されている。
+        const maxRetries = 3;
+        const retryTimeout = 30000; // 各試行は30秒でタイムアウト（フル待ちを避ける）
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            const attemptOptions = {
+              ...contextOptions,
+              timeout: attempt < maxRetries ? retryTimeout : this.options.timeout,
+            };
+            this.context = await browserLauncher.launchPersistentContext(
+              profilePath,
+              attemptOptions as Parameters<
+                typeof browserLauncher.launchPersistentContext
+              >[1],
+            );
+            console.log(`[DEBUG] launchPersistentContext succeeded (attempt ${attempt}/${maxRetries})`);
+            break;
+          } catch (e) {
+            console.log(`[DEBUG] launchPersistentContext failed (attempt ${attempt}/${maxRetries}): ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+            if (attempt >= maxRetries) throw e;
+            // Chrome プロセスを強制終了してからリトライ
+            try {
+              const cmd = new Deno.Command("pkill", { args: ["-9", "-f", "chrome.*user-data-dir.*taskchute"] });
+              await cmd.output();
+            } catch { /* ignore */ }
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+        }
+
+        this.browser = this.context!.browser();
+        this.page = this.context!.pages()[0] || await this.context!.newPage();
 
         // WSLg 固有: navigator.webdriver 偽装スクリプトを注入
         // Why: Google の自動化検出バイパスに必要。platform.ts のフラグで制御することで

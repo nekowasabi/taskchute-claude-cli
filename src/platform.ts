@@ -379,8 +379,6 @@ export function getFullLaunchConfig(
       platformProfileSubPath: ".taskchute/chrome-profile",
       injectWebdriverSpoof: true,
       injectSavedCookies: true,
-      // Why: WSLg では --remote-debugging-pipe の FD 7 継承が失敗するため
-      //      cdpPort で TCP ポート経由の DevTools Protocol に切り替える
       cdpPort: 9222,
     };
   } else if (platformInfo.isWSL) {

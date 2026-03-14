@@ -148,8 +148,10 @@ export class CSVDownloader {
       // スケルトンがない場合は無視
     }
 
-    // DOMの読み込み完了を待機（networkidleは使用しない）
-    await page.waitForLoadState("load");
+    // DOMの読み込み完了を待機（loadはSPAで無限待機になるためdomcontentloadedを使用）
+    await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {
+      // タイムアウトしても処理を継続
+    });
 
     // 追加の安定化待機（Reactの非同期レンダリング完了のため）
     await page.waitForTimeout(this.config.reactWaitTime);
@@ -358,20 +360,46 @@ export class CSVDownloader {
       console.log("[CSVDownloader] React初期化を待機中...");
       await this.waitForReactReady(page);
 
-      // Step 3: 日付入力フィールドを検索
-      console.log("[CSVDownloader] 日付入力フィールドを検索中...");
-      const dateInputs = await this.findDateInputs(page);
+      // Step 3: デバッグ: ページHTMLを保存してDOM構造を確認
+      const debugHtmlPath = `${options.outputDir || "tmp/claude"}/debug-csv-export-page.html`;
+      try {
+        await ensureDir(options.outputDir || "tmp/claude");
+        const html = await page.content();
+        await Deno.writeTextFile(debugHtmlPath, html);
+        console.log(`[CSVDownloader][DEBUG] ページHTML保存: ${debugHtmlPath} (${html.length}文字)`);
+      } catch (e) {
+        console.log(`[CSVDownloader][DEBUG] ページHTML保存失敗: ${e}`);
+      }
 
-      if (dateInputs.length >= 2) {
-        // Step 4: 日付を入力
-        console.log(`[CSVDownloader] 日付を入力中: ${startDate} - ${endDate}`);
-        await this.setDateStable(dateInputs[0], startDate, page);
-        await this.setDateStable(dateInputs[1], endDate, page);
+      // Step 4: MUI DateRangePicker v6 に日付を入力
+      console.log(`[CSVDownloader] 日付を入力中: ${startDate} - ${endDate}`);
+      const dateRangeResult = await this.setDateRange(page, startDate, endDate);
+      console.log(`[CSVDownloader][DEBUG] setDateRange 結果: ${dateRangeResult}`);
 
-        // 日付ピッカーを閉じる
-        await page.keyboard.press("Escape");
-        await page.click("body", { position: { x: 10, y: 10 } });
-        await page.waitForTimeout(500);
+      if (!dateRangeResult) {
+        // フォールバック: 従来の input 要素ベースの入力を試みる
+        console.log(`[CSVDownloader][DEBUG] setDateRange 失敗。従来方式にフォールバック`);
+        const dateInputs = await this.findDateInputs(page);
+        console.log(`[CSVDownloader][DEBUG] 日付入力フィールド数: ${dateInputs.length}`);
+        if (dateInputs.length >= 2) {
+          const fromResult = await this.setDateStable(dateInputs[0], startDate, page);
+          const toResult = await this.setDateStable(dateInputs[1], endDate, page);
+          console.log(`[CSVDownloader][DEBUG] 従来方式 日付入力結果: from=${fromResult}, to=${toResult}`);
+        } else {
+          console.log(`[CSVDownloader][DEBUG] 日付入力フィールドが2つ未満のため日付入力をスキップ`);
+        }
+      }
+
+      // 日付ピッカーを閉じる
+      await page.keyboard.press("Escape");
+      await page.click("body", { position: { x: 10, y: 10 } });
+      await page.waitForTimeout(500);
+
+      // ダウンロードボタンの状態を事前確認
+      const preButton = await this.findDownloadButton(page);
+      if (preButton) {
+        const preDisabled = await preButton.isDisabled().catch(() => false);
+        console.log(`[CSVDownloader][DEBUG] 日付入力後のダウンロードボタン: disabled=${preDisabled}`);
       }
 
       // Step 5: APIレスポンスのインターセプト準備 + ダウンロードボタンクリック
@@ -395,6 +423,94 @@ export class CSVDownloader {
     } catch (error) {
       console.error(`[CSVDownloader] エラー: ${error}`);
       return createFailureResult((error as Error).message);
+    }
+  }
+
+  /**
+   * MUI DateRangePicker v6 の contenteditable span に日付範囲を入力
+   *
+   * DOM構造:
+   *   <span contenteditable="true" role="spinbutton" data-range-position="start" aria-label="年">YYYY</span>
+   *   <span ... data-range-position="start" aria-label="月">MM</span>
+   *   <span ... data-range-position="start" aria-label="日">DD</span>
+   *   <span ... data-range-position="end" aria-label="年">YYYY</span>
+   *   <span ... data-range-position="end" aria-label="月">MM</span>
+   *   <span ... data-range-position="end" aria-label="日">DD</span>
+   */
+  async setDateRange(
+    page: Page,
+    startDateYYYYMMDD: string,
+    endDateYYYYMMDD: string
+  ): Promise<boolean> {
+    const startYear = startDateYYYYMMDD.substring(0, 4);
+    const startMonth = startDateYYYYMMDD.substring(4, 6);
+    const startDay = startDateYYYYMMDD.substring(6, 8);
+    const endYear = endDateYYYYMMDD.substring(0, 4);
+    const endMonth = endDateYYYYMMDD.substring(4, 6);
+    const endDay = endDateYYYYMMDD.substring(6, 8);
+
+    console.log(`[CSVDownloader][DEBUG] setDateRange: start=${startYear}/${startMonth}/${startDay}, end=${endYear}/${endMonth}/${endDay}`);
+
+    const selector = '.MuiPickersSectionList-sectionContent[data-range-position]';
+
+    // セクション数を確認
+    const sectionCount = await page.locator(selector).count().catch(() => 0);
+    console.log(`[CSVDownloader][DEBUG] MUI DateRangePicker セクション数: ${sectionCount}`);
+
+    if (sectionCount === 0) {
+      console.log(`[CSVDownloader][DEBUG] MUI DateRangePicker のセクションが見つかりません`);
+      return false;
+    }
+
+    // 各セクションの情報をデバッグ出力
+    const allSections = await page.locator(selector).all();
+    for (let i = 0; i < allSections.length; i++) {
+      const pos = await allSections[i].getAttribute("data-range-position").catch(() => null);
+      const label = await allSections[i].getAttribute("aria-label").catch(() => null);
+      const text = await allSections[i].textContent().catch(() => null);
+      console.log(`[CSVDownloader][DEBUG]   section[${i}]: position=${pos}, aria-label=${label}, text="${text}"`);
+    }
+
+    try {
+      // MUI DateRangePicker v6 は値を入力すると自動的に次のセクションにフォーカスが移動する
+      // そのため、最初のセクションだけクリックし、以降はそのまま連続入力する
+
+      // 開始日の年セクションをクリックしてフォーカスを取得
+      const startYearSection = page.locator('.MuiPickersSectionList-sectionContent[data-range-position="start"][aria-label="年"]').first();
+      console.log(`[CSVDownloader][DEBUG] 開始日の年セクションをクリック`);
+      await startYearSection.click();
+      await page.waitForTimeout(200);
+
+      // 年→月→日→(end)年→月→日 の順に連続入力（フォーカスは自動移動）
+      const values = [
+        { value: startYear, label: "start-year" },
+        { value: startMonth, label: "start-month" },
+        { value: startDay, label: "start-day" },
+        { value: endYear, label: "end-year" },
+        { value: endMonth, label: "end-month" },
+        { value: endDay, label: "end-day" },
+      ];
+
+      for (const { value, label } of values) {
+        console.log(`[CSVDownloader][DEBUG] 入力: ${label}="${value}"`);
+        await page.keyboard.type(value, { delay: 30 });
+        await page.waitForTimeout(200);
+      }
+
+      // 入力後の状態を確認
+      const allSectionsAfter = await page.locator('.MuiPickersSectionList-sectionContent[data-range-position]').all();
+      for (let i = 0; i < allSectionsAfter.length; i++) {
+        const pos = await allSectionsAfter[i].getAttribute("data-range-position").catch(() => null);
+        const label = await allSectionsAfter[i].getAttribute("aria-label").catch(() => null);
+        const text = await allSectionsAfter[i].textContent().catch(() => null);
+        console.log(`[CSVDownloader][DEBUG] 入力後 section[${i}]: position=${pos}, label=${label}, text="${text}"`);
+      }
+
+      console.log(`[CSVDownloader][DEBUG] setDateRange 完了`);
+      return true;
+    } catch (error) {
+      console.log(`[CSVDownloader][DEBUG] setDateRange エラー: ${error}`);
+      return false;
     }
   }
 
@@ -462,35 +578,80 @@ export class CSVDownloader {
     // 出力ディレクトリを確保
     await ensureDir(outputDir);
 
+    // 個別タイムアウトを短縮（全体のdownloadTimeoutより短く設定）
+    const individualTimeout = Math.min(this.config.downloadTimeout, 10000);
+    console.log(`[CSVDownloader][DEBUG] individualTimeout=${individualTimeout}ms, outputDir=${outputDir}`);
+
+    // ネットワークリクエストを監視（デバッグ用）
+    page.on("response", (response: Response) => {
+      const url = response.url();
+      const status = response.status();
+      const contentType = response.headers()["content-type"] || "";
+      // csv/export/download関連のURLのみログ出力
+      if (url.includes("csv") || url.includes("export") || url.includes("download") || contentType.includes("csv")) {
+        console.log(`[CSVDownloader][DEBUG] Response: ${status} ${url} (content-type: ${contentType})`);
+      }
+    });
+
+    // ダウンロードボタンの状態を確認
+    const buttonText = await downloadButton.textContent().catch(() => "(取得失敗)");
+    const buttonDisabled = await downloadButton.isDisabled().catch(() => false);
+    const buttonVisible = await downloadButton.isVisible().catch(() => false);
+    console.log(`[CSVDownloader][DEBUG] ダウンロードボタン: text="${buttonText}", disabled=${buttonDisabled}, visible=${buttonVisible}`);
+
     // 方法1: waitForResponseでAPIレスポンスをキャッチ
+    console.log(`[CSVDownloader][DEBUG] waitForResponse + waitForEvent("download") を開始...`);
     const responsePromise = page.waitForResponse(
-      (response: Response) => this.isCSVResponse(response),
-      { timeout: this.config.downloadTimeout }
-    ).catch(() => null);
+      (response: Response) => {
+        const matched = this.isCSVResponse(response);
+        if (matched) {
+          console.log(`[CSVDownloader][DEBUG] isCSVResponse=true: ${response.url()}`);
+        }
+        return matched;
+      },
+      { timeout: individualTimeout }
+    ).then((r) => ({ type: "response" as const, value: r })).catch((e) => {
+      console.log(`[CSVDownloader][DEBUG] waitForResponse タイムアウト/エラー: ${e}`);
+      return null;
+    });
 
     // 方法2: downloadイベントを監視
     const downloadPromise = page.waitForEvent("download", {
-      timeout: this.config.downloadTimeout
-    }).catch(() => null);
+      timeout: individualTimeout
+    }).then((d) => {
+      console.log(`[CSVDownloader][DEBUG] downloadイベント発火: ${d.suggestedFilename()}`);
+      return { type: "download" as const, value: d };
+    }).catch((e) => {
+      console.log(`[CSVDownloader][DEBUG] waitForEvent("download") タイムアウト/エラー: ${e}`);
+      return null;
+    });
 
     // ダウンロードボタンをクリック
     try {
+      console.log("[CSVDownloader][DEBUG] ボタンクリック実行中...");
       await downloadButton.click();
-    } catch {
+      console.log("[CSVDownloader][DEBUG] ボタンクリック成功");
+    } catch (clickError) {
+      console.log(`[CSVDownloader][DEBUG] 通常クリック失敗: ${clickError}, JS経由でクリック`);
       // 通常のクリックが失敗した場合、JavaScript経由でクリック
       await downloadButton.evaluate((el) => (el as HTMLButtonElement).click());
+      console.log("[CSVDownloader][DEBUG] JSクリック成功");
     }
 
-    // いずれかの方法でレスポンスを取得
-    const [apiResponse, downloadEvent] = await Promise.all([
-      responsePromise,
-      downloadPromise
-    ]);
+    // いずれか早い方のレスポンスを取得
+    console.log("[CSVDownloader][DEBUG] Promise.race 待機中...");
+    const firstResult = await Promise.race([responsePromise, downloadPromise]);
+    console.log(`[CSVDownloader][DEBUG] Promise.race 結果: type=${firstResult?.type ?? "null"}`);
+
+    // 型の安全な分解
+    const apiResponse = firstResult?.type === "response" ? firstResult.value : null;
+    const downloadEvent = firstResult?.type === "download" ? firstResult.value : null;
 
     // APIレスポンスが取得できた場合
     if (apiResponse) {
-      console.log("[CSVDownloader] APIレスポンスをキャッチしました");
+      console.log(`[CSVDownloader][DEBUG] APIレスポンス取得: url=${apiResponse.url()}, status=${apiResponse.status()}`);
       const csvContent = await apiResponse.text();
+      console.log(`[CSVDownloader][DEBUG] レスポンスボディ: ${csvContent.length}文字, 先頭100文字: ${csvContent.substring(0, 100)}`);
       const savePath = `${outputDir}/taskchute-export-${Date.now()}.csv`;
       await Deno.writeTextFile(savePath, csvContent);
 
@@ -522,6 +683,22 @@ export class CSVDownloader {
 
     // フォールバック: ダウンロードディレクトリを確認
     console.log("[CSVDownloader] フォールバック: ダウンロードディレクトリを確認中...");
+    // デバッグ: ページのURLと現在のDOM状態を確認
+    console.log(`[CSVDownloader][DEBUG] 現在のページURL: ${page.url()}`);
+    const downloadDir = `${Deno.env.get("HOME")}/Downloads`;
+    try {
+      const dirFiles: string[] = [];
+      for await (const entry of Deno.readDir(downloadDir)) {
+        const stat = await Deno.stat(`${downloadDir}/${entry.name}`).catch(() => null);
+        const mtime = stat?.mtime ? stat.mtime.toISOString() : "unknown";
+        dirFiles.push(`${entry.name} (mtime: ${mtime})`);
+      }
+      console.log(`[CSVDownloader][DEBUG] ~/Downloads内ファイル数: ${dirFiles.length}`);
+      // 最新5件を表示
+      dirFiles.slice(0, 5).forEach(f => console.log(`[CSVDownloader][DEBUG]   ${f}`));
+    } catch (e) {
+      console.log(`[CSVDownloader][DEBUG] ~/Downloadsの読み取りエラー: ${e}`);
+    }
     return await this.checkDownloadDirectory(outputDir);
   }
 
