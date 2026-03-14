@@ -40,10 +40,12 @@ export function detectPlatform(): PlatformInfo {
     isWindows: os === "windows" && !isWSL,
     isLinux: os === "linux" && !isWSL,
   };
-  
+
   // プラットフォームごとのChromeユーザーデータディレクトリを設定
   if (platformInfo.isMac) {
-    platformInfo.chromeUserDataDir = `${Deno.env.get("HOME")}/Library/Application Support/Google/Chrome`;
+    platformInfo.chromeUserDataDir = `${
+      Deno.env.get("HOME")
+    }/Library/Application Support/Google/Chrome`;
   } else if (platformInfo.isWindows) {
     const appData = Deno.env.get("LOCALAPPDATA") || Deno.env.get("APPDATA");
     if (appData) {
@@ -56,9 +58,11 @@ export function detectPlatform(): PlatformInfo {
       platformInfo.chromeUserDataDir = userDataDir;
     }
   } else if (platformInfo.isLinux) {
-    platformInfo.chromeUserDataDir = `${Deno.env.get("HOME")}/.config/google-chrome`;
+    platformInfo.chromeUserDataDir = `${
+      Deno.env.get("HOME")
+    }/.config/google-chrome`;
   }
-  
+
   return platformInfo;
 }
 
@@ -70,7 +74,7 @@ function checkIfWSL(): boolean {
     // /proc/versionファイルの内容でWSLを判定
     const procVersion = Deno.readTextFileSync("/proc/version");
     return procVersion.toLowerCase().includes("microsoft") ||
-           procVersion.toLowerCase().includes("wsl");
+      procVersion.toLowerCase().includes("wsl");
   } catch {
     // ファイルが読めない場合はWSLではない
     return false;
@@ -130,7 +134,7 @@ export function detectWindowsUsername(): string | undefined {
       "Default",
       "Default User",
       "All Users",
-      "Administrator"
+      "Administrator",
     ]);
 
     for (const entry of entries) {
@@ -152,19 +156,22 @@ export function detectWindowsUsername(): string | undefined {
  * @returns 検証結果
  */
 export async function validateChromePath(
-  path: string
+  path: string,
 ): Promise<ChromePathValidation> {
   try {
     const stat = await Deno.stat(path);
     if (stat.isFile) {
       return { valid: true, path };
     } else {
-      return { valid: false, error: `パスはファイルではなくディレクトリです: ${path}` };
+      return {
+        valid: false,
+        error: `パスはファイルではなくディレクトリです: ${path}`,
+      };
     }
   } catch (error) {
     return {
       valid: false,
-      error: `Chromeパスの検証に失敗しました: ${(error as Error).message}`
+      error: `Chromeパスの検証に失敗しました: ${(error as Error).message}`,
     };
   }
 }
@@ -175,7 +182,7 @@ export async function validateChromePath(
  * @returns Chrome User Dataディレクトリパスまたはundefined
  */
 export function getWSLChromeUserDataDir(
-  username?: string
+  username?: string,
 ): string | undefined {
   // 注意: detectPlatform()を呼び出すと相互再帰でスタックオーバーフローが発生する
   // 直接checkIfWSL()を使用する
@@ -221,34 +228,34 @@ export function getBrowserLaunchOptions(platformInfo: PlatformInfo): {
 } {
   if (platformInfo.isMac) {
     return {
-      channel: 'chrome',
-      useExistingProfile: true
+      channel: "chrome",
+      useExistingProfile: true,
     };
   } else if (platformInfo.isWindows) {
     return {
-      channel: 'chrome',
-      useExistingProfile: true
+      channel: "chrome",
+      useExistingProfile: true,
     };
   } else if (platformInfo.isWSLg) {
     // WSLg環境: Linux版Google Chromeを使用
     // WSLgによりGUIアプリケーションが動作可能
     // 参考: https://learn.microsoft.com/ja-jp/windows/wsl/tutorials/gui-apps#install-google-chrome-for-linux
     return {
-      channel: 'chrome',
-      useExistingProfile: true
+      channel: "chrome",
+      useExistingProfile: true,
     };
   } else if (platformInfo.isWSL) {
     // WSL（非WSLg）: Playwright組み込みChromiumを使用
     // Windows側のChromeはWSL-Windows間の通信問題があるため使用しない
     return {
-      channel: 'chromium',
-      useExistingProfile: false
+      channel: "chromium",
+      useExistingProfile: false,
     };
   } else {
     // Linuxの場合
     return {
-      channel: 'chromium',
-      useExistingProfile: false
+      channel: "chromium",
+      useExistingProfile: false,
     };
   }
 }
@@ -267,7 +274,7 @@ export function getBrowserLaunchOptions(platformInfo: PlatformInfo): {
 export interface PlatformLaunchConfig {
   /** Playwright channel ('chrome' | 'chromium' | undefined) */
   channel?: string;
-  /** 直接実行パス（現在は未使用、将来の拡張用） */
+  /** 直接実行パス（executablePath で Chrome/Chromium を直接指定） */
   executablePath?: string;
   /** launchPersistentContext に渡す args */
   args: string[];
@@ -294,6 +301,12 @@ export interface PlatformLaunchConfig {
    * Cookie 注入が必要か（WSL/WSLg 環境で保存済み Cookie を使用する場合）
    */
   injectSavedCookies: boolean;
+  /**
+   * CDP ポート番号（設定時は --remote-debugging-port を使用、未設定時は --remote-debugging-pipe）
+   * Why: WSLg/WSL2 では --remote-debugging-pipe の FD 継承が失敗する（Failed global descriptor lookup: 7）
+   *      cdpPort を設定することで TCP ポート経由に切り替えて問題を回避する
+   */
+  cdpPort?: number;
 }
 
 /**
@@ -302,7 +315,10 @@ export interface PlatformLaunchConfig {
  * fetcher.ts の launchBrowser 内の isMac/isWSL/isWSLg 直接分岐を
  * この関数に集約することで、fetcher.ts からプラットフォームフラグの直接参照を排除する。
  */
-export function getFullLaunchConfig(platformInfo: PlatformInfo): PlatformLaunchConfig {
+export function getFullLaunchConfig(
+  platformInfo: PlatformInfo,
+  options: { headless?: boolean } = {},
+): PlatformLaunchConfig {
   if (platformInfo.isMac) {
     return {
       // Why: channel:'chrome' (システムChrome) ではなくPlaywrightバンドルChromiumを使用する
@@ -313,7 +329,7 @@ export function getFullLaunchConfig(platformInfo: PlatformInfo): PlatformLaunchC
       // macOS では --no-sandbox がサンドボックス機構と競合し
       // remote-debugging-pipe接続が確立できなくなる。
       args: [],
-      ignoreDefaultArgs: ['--no-sandbox'],
+      ignoreDefaultArgs: ["--no-sandbox"],
       acceptDownloads: true,
       useExistingProfile: true,
       usePlatformProfilePath: false,
@@ -322,8 +338,8 @@ export function getFullLaunchConfig(platformInfo: PlatformInfo): PlatformLaunchC
     };
   } else if (platformInfo.isWindows) {
     return {
-      channel: 'chrome',
-      args: ['--no-first-run', '--no-default-browser-check'],
+      channel: "chrome",
+      args: ["--no-first-run", "--no-default-browser-check"],
       acceptDownloads: false,
       useExistingProfile: true,
       usePlatformProfilePath: false,
@@ -331,42 +347,56 @@ export function getFullLaunchConfig(platformInfo: PlatformInfo): PlatformLaunchC
       injectSavedCookies: false,
     };
   } else if (platformInfo.isWSLg) {
-    // WSLg環境: Linux版Google Chromeを使用
+    // WSLg環境: システムの Google Chrome を executablePath で直接指定
+    // Why: channel:'chrome' は --remote-debugging-pipe の FD 7 継承失敗でタイムアウト。
+    //      バンドル版 Chromium は WSL2 カーネルの seccomp-BPF 制限で exitCode=133(SIGTRAP)。
+    //      システム Chrome はWSL2向けにビルドされており、これらの問題が起きにくい。
+    //      executablePath で直接指定することで channel フラグの副作用を回避する。
     // --enable-automation を除外してGoogle の自動化検出をバイパスする
     // Why: ignoreDefaultArgs で --enable-automation を除外しないと
     //      Google が「This browser or app may not be secure」を表示してログインをブロックする
     return {
-      channel: 'chrome',
+      executablePath: "/opt/google/chrome/chrome",
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-infobars',
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        // Why: ContextResult::kTransientFailure - GPU プロセスへの IPC が WSLg 環境で失敗する。
+        //      --in-process-gpu で GPU をブラウザプロセス内で実行し IPC 失敗を根本解消する。
+        //      headless:true 時は --disable-gpu で GPU 全体を無効化する（描画不要のため）。
+        ...(options.headless !== false
+          ? ["--disable-gpu"]
+          : ["--in-process-gpu"]),
+        "--hide-crash-restore-bubble",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-infobars",
       ],
-      ignoreDefaultArgs: ['--enable-automation'],
+      ignoreDefaultArgs: ["--enable-automation"],
       acceptDownloads: true,
       useExistingProfile: false,
       usePlatformProfilePath: true,
-      platformProfileSubPath: '.taskchute/chrome-profile',
+      platformProfileSubPath: ".taskchute/chrome-profile",
       injectWebdriverSpoof: true,
       injectSavedCookies: true,
+      // Why: WSLg では --remote-debugging-pipe の FD 7 継承が失敗するため
+      //      cdpPort で TCP ポート経由の DevTools Protocol に切り替える
+      cdpPort: 9222,
     };
   } else if (platformInfo.isWSL) {
     // WSL（非WSLg）: Playwright組み込みChromiumを使用
     // Why: Windows側のChromeはWSL-Windows間の通信問題があるため使用しない
     return {
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
       ],
       acceptDownloads: true,
       useExistingProfile: false,
       usePlatformProfilePath: true,
-      platformProfileSubPath: '.taskchute/chromium-profile',
+      platformProfileSubPath: ".taskchute/chromium-profile",
       injectWebdriverSpoof: false,
       injectSavedCookies: true,
     };
@@ -432,7 +462,6 @@ export async function convertToWindowsPath(linuxPath: string): Promise<string> {
     const windowsPath = new TextDecoder().decode(stdout).trim();
     console.log(`[Platform] パス変換: ${linuxPath} -> ${windowsPath}`);
     return windowsPath;
-
   } catch (error) {
     console.error(`wslpathコマンド実行エラー: ${(error as Error).message}`);
     return linuxPath; // エラー時は元のパスを返す

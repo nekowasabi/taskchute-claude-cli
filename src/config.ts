@@ -24,25 +24,33 @@ export class ConfigManager {
   private defaultConfig: Config;
 
   constructor() {
-    this.configPath = join(Deno.env.get("HOME") || ".", ".taskchute", "config.json");
+    this.configPath = join(
+      Deno.env.get("HOME") || ".",
+      ".taskchute",
+      "config.json",
+    );
     this.defaultConfig = {
       auth: {
         // Chrome プロファイルを使用するため、ダミー値を設定
         email: "chrome-profile@example.com",
-        password: "not-used"
+        password: "not-used",
       },
       fetcher: {
         headless: true,
         browser: "chromium",
-        timeout: 30000,
+        timeout: 120000,
         viewport: { width: 1920, height: 1080 },
-        userDataDir: join(Deno.env.get("HOME") || ".", ".taskchute", "browser-profile")
+        userDataDir: join(
+          Deno.env.get("HOME") || ".",
+          ".taskchute",
+          "browser-profile",
+        ),
       },
       general: {
         defaultOutputDir: "./tmp/claude",
         maxRetries: 3,
-        logLevel: "info"
-      }
+        logLevel: "info",
+      },
     };
   }
 
@@ -54,7 +62,7 @@ export class ConfigManager {
     try {
       const configJson = await Deno.readTextFile(this.configPath);
       const userConfig = JSON.parse(configJson);
-      
+
       // デフォルト設定とユーザー設定をマージ
       return this.mergeConfig(this.defaultConfig, userConfig);
     } catch {
@@ -71,7 +79,7 @@ export class ConfigManager {
     try {
       const currentConfig = await this.loadConfig();
       const newConfig = this.mergeConfig(currentConfig, config);
-      
+
       await ensureDir(join(this.configPath, ".."));
       const configJson = JSON.stringify(newConfig, null, 2);
       await Deno.writeTextFile(this.configPath, configJson);
@@ -117,23 +125,30 @@ export class ConfigManager {
       auth: {
         // Chrome プロファイルを使用するため、環境変数は不要
         email: "chrome-profile@example.com",
-        password: "not-used"
+        password: "not-used",
       },
       fetcher: {
-        headless: Deno.env.get("TASKCHUTE_HEADLESS") === "false" ? false : this.defaultConfig.fetcher.headless,
-        browser: (Deno.env.get("TASKCHUTE_BROWSER") as any) || this.defaultConfig.fetcher.browser,
-        timeout: parseInt(Deno.env.get("TASKCHUTE_TIMEOUT") || "") || this.defaultConfig.fetcher.timeout,
+        headless: Deno.env.get("TASKCHUTE_HEADLESS") === "false"
+          ? false
+          : this.defaultConfig.fetcher.headless,
+        browser: (Deno.env.get("TASKCHUTE_BROWSER") as any) ||
+          this.defaultConfig.fetcher.browser,
+        timeout: parseInt(Deno.env.get("TASKCHUTE_TIMEOUT") || "") ||
+          this.defaultConfig.fetcher.timeout,
         viewport: this.defaultConfig.fetcher.viewport,
         // TASKCHUTE_CHROME_PATH環境変数をサポート（WSL対応）
         userDataDir: Deno.env.get("TASKCHUTE_CHROME_PATH") ||
-                     Deno.env.get("TASKCHUTE_USER_DATA_DIR") ||
-                     this.defaultConfig.fetcher.userDataDir
+          Deno.env.get("TASKCHUTE_USER_DATA_DIR") ||
+          this.defaultConfig.fetcher.userDataDir,
       },
       general: {
-        defaultOutputDir: Deno.env.get("TASKCHUTE_OUTPUT_DIR") || this.defaultConfig.general.defaultOutputDir,
-        maxRetries: parseInt(Deno.env.get("TASKCHUTE_MAX_RETRIES") || "") || this.defaultConfig.general.maxRetries,
-        logLevel: (Deno.env.get("TASKCHUTE_LOG_LEVEL") as any) || this.defaultConfig.general.logLevel
-      }
+        defaultOutputDir: Deno.env.get("TASKCHUTE_OUTPUT_DIR") ||
+          this.defaultConfig.general.defaultOutputDir,
+        maxRetries: parseInt(Deno.env.get("TASKCHUTE_MAX_RETRIES") || "") ||
+          this.defaultConfig.general.maxRetries,
+        logLevel: (Deno.env.get("TASKCHUTE_LOG_LEVEL") as any) ||
+          this.defaultConfig.general.logLevel,
+      },
     };
   }
 
@@ -144,11 +159,14 @@ export class ConfigManager {
    * @returns マージされた設定オブジェクト
    * @private
    */
-  private mergeConfig(defaultConfig: Config, userConfig: Partial<Config>): Config {
+  private mergeConfig(
+    defaultConfig: Config,
+    userConfig: Partial<Config>,
+  ): Config {
     return {
       auth: { ...defaultConfig.auth, ...userConfig.auth },
       fetcher: { ...defaultConfig.fetcher, ...userConfig.fetcher },
-      general: { ...defaultConfig.general, ...userConfig.general }
+      general: { ...defaultConfig.general, ...userConfig.general },
     };
   }
 
@@ -187,7 +205,7 @@ export class ConfigManager {
 
     return {
       valid: errors.length === 0,
-      errors
+      errors,
     };
   }
 
@@ -248,18 +266,22 @@ export class ConfigManager {
    */
   printCurrentConfig(): void {
     const config = this.getConfigSync();
-    
+
     console.log("現在の設定:");
     console.log("=".repeat(50));
     console.log("認証設定:");
     console.log(`  Email: ${config.auth.email ? "***設定済み***" : "未設定"}`);
-    console.log(`  Password: ${config.auth.password ? "***設定済み***" : "未設定"}`);
+    console.log(
+      `  Password: ${config.auth.password ? "***設定済み***" : "未設定"}`,
+    );
     console.log();
     console.log("フェッチャー設定:");
     console.log(`  Headless: ${config.fetcher.headless}`);
     console.log(`  Browser: ${config.fetcher.browser}`);
     console.log(`  Timeout: ${config.fetcher.timeout}ms`);
-    console.log(`  Viewport: ${config.fetcher.viewport?.width}x${config.fetcher.viewport?.height}`);
+    console.log(
+      `  Viewport: ${config.fetcher.viewport?.width}x${config.fetcher.viewport?.height}`,
+    );
     console.log();
     console.log("一般設定:");
     console.log(`  Default Output Dir: ${config.general.defaultOutputDir}`);
