@@ -119,9 +119,11 @@ taskchute-claude-cli/
 │   ├── main.ts          # メインエントリーポイント
 │   ├── cli.ts           # CLIコマンド処理
 │   ├── auth.ts          # 認証・セッション管理
-│   ├── fetcher.ts       # データ取得・ブラウザ制御
+│   ├── fetcher.ts       # データ取得・ブラウザ制御（コア処理）
+│   ├── fetcher-helpers.ts  # スクレイピング・ファイル保存ヘルパー
+│   ├── types.ts         # 共通型定義（FetcherOptions, TaskData等）
 │   ├── config.ts        # 設定管理
-│   ├── platform.ts      # プラットフォーム検出
+│   ├── platform.ts      # プラットフォーム検出・起動設定
 │   ├── chrome-profile-manager.ts  # Chrome プロファイル管理
 │   └── csv-parser.ts    # CSVパース機能
 ├── tests/
@@ -432,6 +434,13 @@ channel: 'chrome' // 実際のChromeを使用
 MIT License
 
 ## 開発履歴
+
+- **v3.2.0**: fetcher.tsリファクタリング
+  - `src/types.ts` を追加: `FetcherOptions`, `TaskData`, `FetchResult`, `NavigationResult`, `AuthResult`, `SaveResult` の共通型定義を集約
+  - `src/fetcher-helpers.ts` を追加: `scrapeTaskData`, `saveHTMLToFile`, `saveJSONToFile`, `getDailyTaskStats` をコアロジックから分離
+  - `src/fetcher.ts` を1352行→558行に削減（59%削減）
+  - `src/platform.ts` に `PlatformLaunchConfig` 型と `getFullLaunchConfig()` 関数を追加
+  - `src/auth.ts`: `AuthResult` を `AuthSessionResult` にリネーム（type aliasで後方互換維持）
 
 - **v3.1.0**: 日付範囲指定機能の追加
   - `--from`と`--to`オプションによる任意期間のデータ取得

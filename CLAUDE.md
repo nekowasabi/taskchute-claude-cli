@@ -53,6 +53,8 @@ src/
 ├── cli.ts       - コマンドルーティング、引数解析
 ├── auth.ts      - 認証とセッション管理（Playwrightコンテキスト永続化）
 ├── fetcher.ts   - ブラウザ自動化、データ取得（getTaskDataFromCSV）
+├── types.ts     - 共通型定義（FetcherOptions, TaskData等6 interface）
+├── fetcher-helpers.ts - スクレイピング・ファイル保存ヘルパー関数
 └── config.ts    - 設定管理（環境変数、ファイル設定）
 ```
 
@@ -81,6 +83,15 @@ src/
 2. **ログイン永続化** - Chromeプロファイルコピー機能で解決  
 3. **ダウンロード検出** - UUID形式ファイルの検出に対応
 4. **CSVパース** - 完全なパース機能を実装
+
+### リファクタリング完了事項（mission-20260314）
+
+- ✅ types.ts 分離: 6 interface を fetcher.ts から分離、re-exportで後方互換維持
+- ✅ console.log 除去: 82個のデバッグログを全削除
+- ✅ platform分岐集約: launchBrowser の直接分岐を platform.ts の getFullLaunchConfig に委譲
+- ✅ CSVDownloader委譲: getTaskDataFromCSV を CSVDownloader.downloadCSV() に委譲
+- ✅ fetcher-helpers.ts 分離: スクレイピング・ファイル保存ロジックを外部化
+- ✅ fetcher.ts: 1352行 → 558行（59%削減）
 
 ### 重要な実装詳細
 
