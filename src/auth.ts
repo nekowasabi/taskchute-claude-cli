@@ -20,13 +20,16 @@ export interface SessionData {
 }
 
 /**
- * 認証結果
+ * 認証結果（セッション管理用）
  */
-export interface AuthResult {
+export interface AuthSessionResult {
   success: boolean;
   email?: string;
   error?: string;
 }
+
+// Why: alias instead of breaking rename — external callers may use AuthResult from auth.ts
+export type AuthResult = AuthSessionResult;
 
 /**
  * TaskChuteの認証とセッション管理を扱うクラス
@@ -132,7 +135,7 @@ export class TaskChuteAuth {
    * 新しいセッションを作成する
    * @returns 認証結果
    */
-  async createSession(): Promise<AuthResult> {
+  async createSession(): Promise<AuthSessionResult> {
     try {
       const sessionData: SessionData = {
         email: this.credentials.email,
@@ -170,7 +173,7 @@ export class TaskChuteAuth {
    * セッションを更新する
    * @returns 認証結果
    */
-  async refreshSession(): Promise<AuthResult> {
+  async refreshSession(): Promise<AuthSessionResult> {
     const session = await this.getStoredSession();
     if (!session) {
       return {

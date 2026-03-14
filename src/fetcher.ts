@@ -2,77 +2,13 @@ import { chromium, firefox, webkit, Browser, Page, BrowserContext } from "playwr
 import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
 import { LoginCredentials } from "./auth.ts";
-import { detectPlatform, getBrowserLaunchOptions, convertToWindowsPath } from "./platform.ts";
+import { detectPlatform, getBrowserLaunchOptions, getFullLaunchConfig, convertToWindowsPath } from "./platform.ts";
 import { TaskChuteCsvParser } from "./csv-parser.ts";
 import { ChromeProfileManager } from "./chrome-profile-manager.ts";
 import { CookieManager, type PlaywrightCookie } from "./cookie-manager.ts";
-
-/**
- * Fetcherのオプション
- */
-export interface FetcherOptions {
-  headless?: boolean;
-  browser?: "chromium" | "firefox" | "webkit";
-  timeout?: number;
-  viewport?: { width: number; height: number };
-  userDataDir?: string;
-}
-
-/**
- * タスクデータ
- */
-export interface TaskData {
-  id: string;
-  title: string;
-  status: string;
-  description?: string;
-  startTime?: string;
-  endTime?: string;
-  duration?: number;
-  category?: string;
-  estimatedTime?: string;
-  actualTime?: string;
-}
-
-/**
- * フェッチ結果
- */
-export interface FetchResult<T = any> {
-  success: boolean;
-  data?: T;
-  html?: string;
-  tasks?: TaskData[];
-  error?: string;
-  downloadPath?: string;
-}
-
-/**
- * ナビゲーション結果
- */
-export interface NavigationResult {
-  success: boolean;
-  currentUrl?: string;
-  error?: string;
-}
-
-/**
- * 認証結果
- */
-export interface AuthResult {
-  success: boolean;
-  token?: string;
-  finalUrl?: string;
-  error?: string;
-}
-
-/**
- * 保存結果
- */
-export interface SaveResult {
-  success: boolean;
-  filePath?: string;
-  error?: string;
-}
+import type { FetcherOptions, TaskData, FetchResult, NavigationResult, AuthResult, SaveResult } from "./types.ts";
+import { CSVDownloader } from "./csv-downloader.ts";
+import { scrapeTaskData, saveHTMLToFile as _saveHTMLToFile, saveJSONToFile as _saveJSONToFile, getDailyTaskStats as _getDailyTaskStats } from "./fetcher-helpers.ts";
 
 /**
  * TaskChuteのデータを取得するためのクラス
@@ -97,7 +33,6 @@ export class TaskChuteDataFetcher {
       userDataDir: options.userDataDir ?? defaultUserDataDir
     };
     
-    console.log(`[Fetcher] ユーザーデータディレクトリ: ${this.options.userDataDir}`);
   }
 
   /**
@@ -133,11 +68,9 @@ export class TaskChuteDataFetcher {
 
       const expired = this.cookieManager.checkCookieExpiration(cookies);
       if (expired.length > 0) {
-        console.log(`警告: 期限切れのCookieがあります: ${expired.join(", ")}`);
       }
 
       await this.cookieManager.injectCookies(this.context, cookies);
-      console.log(`${cookies.length}個のCookieを注入しました`);
 
       return { success: true, count: cookies.length };
     } catch (error) {
@@ -180,146 +113,68 @@ export class TaskChuteDataFetcher {
       }
 
       if (this.options.userDataDir) {
-        console.log(`[Fetcher] launchPersistentContextを使用: ${this.options.userDataDir}`);
-        
-        // プラットフォーム情報を取得
+
+        // プラットフォーム情報を取得し、全起動設定を一括取得
+        // Why: isMac/isWSL/isWSLg の直接分岐を fetcher.ts から排除し platform.ts に集約する
         const platformInfo = detectPlatform();
-        const launchOptions = getBrowserLaunchOptions(platformInfo);
-        
+        const launchConfig = getFullLaunchConfig(platformInfo);
+
+        // プロファイルパスの決定
+        // Why: usePlatformProfilePath=true の場合はプラットフォーム固有パスを使用し、
+        //      false の場合は this.options.userDataDir をそのまま使用する
+        const home = Deno.env.get("HOME") || ".";
+        const profilePath = launchConfig.usePlatformProfilePath && launchConfig.platformProfileSubPath
+          ? `${home}/${launchConfig.platformProfileSubPath}`
+          : this.options.userDataDir;
+
         // ディレクトリが存在しない場合は作成
-        await ensureDir(this.options.userDataDir);
-        
-        // M2 Macの場合は実際のChromeを使用
-        if (platformInfo.isMac) {
-          console.log("[Fetcher] Mac環境: 実際のGoogle Chromeを使用します");
-          browserLauncher = chromium;
-          
-          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
-            headless: this.options.headless,
-            timeout: this.options.timeout,
-            viewport: this.options.viewport,
-            channel: 'chrome', // 実際のChromeを使用
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            acceptDownloads: true,
-            downloadsPath: `${Deno.env.get("HOME")}/Downloads`
-          });
-        } else if (platformInfo.isWindows && this.options.userDataDir.includes("Google/Chrome")) {
-          // WindowsでChromeプロファイルを使用する場合
-          console.log("[Fetcher] Windows環境: Chromeプロファイルを使用します");
-          browserLauncher = chromium;
-          
-          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
-            headless: this.options.headless,
-            timeout: this.options.timeout,
-            viewport: this.options.viewport,
-            channel: launchOptions.channel,
-            args: ['--no-first-run', '--no-default-browser-check']
-          });
-        } else if (platformInfo.isWSLg) {
-          // WSLg環境: Linux版Google Chromeを使用
-          // WSLgによりGUIアプリケーションが動作可能
-          console.log("[Fetcher] WSLg環境: Linux版Google Chromeを使用します");
+        await ensureDir(profilePath);
 
-          // Linux版Chromeのプロファイルディレクトリ
-          const chromeProfilePath = `${Deno.env.get("HOME")}/.taskchute/chrome-profile`;
-          await ensureDir(chromeProfilePath);
-          console.log(`[Fetcher] プロファイルパス: ${chromeProfilePath}`);
+        // launchPersistentContext オプションを組み立て
+        const contextOptions: Record<string, unknown> = {
+          headless: this.options.headless,
+          timeout: this.options.timeout,
+          viewport: this.options.viewport,
+          args: launchConfig.args,
+        };
+        if (launchConfig.channel !== undefined) {
+          contextOptions.channel = launchConfig.channel;
+        }
+        if (launchConfig.executablePath !== undefined) {
+          contextOptions.executablePath = launchConfig.executablePath;
+        }
+        if (launchConfig.ignoreDefaultArgs !== undefined) {
+          contextOptions.ignoreDefaultArgs = launchConfig.ignoreDefaultArgs;
+        }
+        if (launchConfig.acceptDownloads) {
+          contextOptions.acceptDownloads = true;
+          contextOptions.downloadsPath = `${home}/Downloads`;
+        }
 
-          // Google自動化検出バイパス用の設定
-          // Playwrightはデフォルトで--enable-automationフラグを追加するが、
-          // これをGoogleが検出して「This browser or app may not be secure」エラーを表示する
-          // 対策: ignoreDefaultArgsで除外し、AutomationControlled機能を無効化
-          console.log("[Fetcher] Google自動化検出バイパスを有効化");
+        browserLauncher = chromium;
+        this.context = await browserLauncher.launchPersistentContext(profilePath, contextOptions as Parameters<typeof browserLauncher.launchPersistentContext>[1]);
 
-          // Linux版Google Chromeを使用（channel: 'chrome'）
-          this.context = await browserLauncher.launchPersistentContext(chromeProfilePath, {
-            headless: this.options.headless,
-            timeout: this.options.timeout,
-            viewport: this.options.viewport,
-            channel: 'chrome', // Linux版Google Chromeを使用
-            // 自動化検出フラグを除外
-            ignoreDefaultArgs: ['--enable-automation'],
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              // Blink自動化検出機能を無効化
-              '--disable-blink-features=AutomationControlled',
-              // 追加のアンチ検出対策
-              '--disable-features=IsolateOrigins,site-per-process',
-              '--disable-infobars'
-            ],
-            acceptDownloads: true,
-            downloadsPath: `${Deno.env.get("HOME")}/Downloads`
-          });
+        this.browser = this.context.browser();
+        this.page = this.context.pages()[0] || await this.context.newPage();
 
-          this.browser = this.context.browser();
-          this.page = this.context.pages()[0] || await this.context.newPage();
-          console.log(`[Fetcher] Chrome起動成功。既存ページ数: ${this.context.pages().length}`);
-
-          // navigator.webdriverプロパティを偽装（Googleの自動化検出対策）
+        // WSLg 固有: navigator.webdriver 偽装スクリプトを注入
+        // Why: Google の自動化検出バイパスに必要。platform.ts のフラグで制御することで
+        //      fetcher.ts からの isWSLg 直接参照を排除する
+        if (launchConfig.injectWebdriverSpoof) {
           await this.page.addInitScript(() => {
-            // navigator.webdriverをundefinedに設定
             Object.defineProperty(navigator, 'webdriver', {
               get: () => undefined,
             });
-            // さらにWebDriverプロパティも偽装
             // @ts-ignore
             delete navigator.__proto__.webdriver;
           });
-          console.log("[Fetcher] navigator.webdriver偽装を設定");
+        }
 
-          // 保存されたCookieがあれば注入を試みる
-          const cookieResult = await this.injectSavedCookies();
-          if (cookieResult.success) {
-            console.log(`[Fetcher] 保存されたCookieを注入しました (${cookieResult.count}個)`);
-          }
-        } else if (platformInfo.isWSL) {
-          // WSL（非WSLg）環境: Playwrightの組み込みChromium（Linux版）を使用
-          // Windows側のChromeはWSL-Windows間の通信問題があるため使用しない
-          console.log("[Fetcher] WSL環境（非WSLg）: Playwright組み込みChromiumを使用します");
-
-          // WSL用のプロファイルディレクトリ（Linux側）
-          const wslProfilePath = `${Deno.env.get("HOME")}/.taskchute/chromium-profile`;
-          await ensureDir(wslProfilePath);
-          console.log(`[Fetcher] プロファイルパス: ${wslProfilePath}`);
-
-          // Playwrightの組み込みChromiumを使用（Linux版）
-          this.context = await browserLauncher.launchPersistentContext(wslProfilePath, {
-            headless: this.options.headless,
-            timeout: this.options.timeout,
-            viewport: this.options.viewport,
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-gpu'
-            ],
-            acceptDownloads: true,
-            downloadsPath: `${Deno.env.get("HOME")}/Downloads`
-          });
-
-          this.browser = this.context.browser();
-          this.page = this.context.pages()[0] || await this.context.newPage();
-          console.log(`[Fetcher] Chromium起動成功。既存ページ数: ${this.context.pages().length}`);
-          // 保存されたCookieがあれば注入を試みる
-          const cookieResult = await this.injectSavedCookies();
-          if (cookieResult.success) {
-            console.log(`[Fetcher] 保存されたCookieを注入しました (${cookieResult.count}個)`);
-          }
-        } else {
-          // その他の環境（Linux等）
-          this.context = await browserLauncher.launchPersistentContext(this.options.userDataDir, {
-            headless: this.options.headless,
-            timeout: this.options.timeout,
-            viewport: this.options.viewport,
-          });
+        // Cookie 注入（WSL/WSLg 環境で保存済み Cookie を使用する場合）
+        if (launchConfig.injectSavedCookies) {
+          await this.injectSavedCookies();
         }
         
-        this.browser = this.context.browser();
-        this.page = this.context.pages()[0] || await this.context.newPage();
-        
-        console.log(`[Fetcher] 永続化コンテキスト作成完了。既存ページ数: ${this.context.pages().length}`);
       } else {
         this.browser = await browserLauncher.launch({
           headless: this.options.headless,
@@ -370,7 +225,6 @@ export class TaskChuteDataFetcher {
       let url = "https://taskchute.cloud/taskchute";
       if (fromDate && toDate) {
         url += `?from=${fromDate}&to=${toDate}`;
-        console.log(`[Fetcher] 日付範囲指定のURLへ遷移: ${url}`);
       }
 
       // React SPAではnetworkidleは到達しないため、domcontentloadedを使用
@@ -437,18 +291,14 @@ export class TaskChuteDataFetcher {
    */
   async isUserLoggedIn(): Promise<boolean> {
     if (!this.page) {
-      console.log(`[Fetcher] ログイン確認: pageがnull`);
       return false;
     }
     try {
       const currentUrl = this.page.url();
-      console.log(`[Fetcher] ログイン確認: 現在のURL = ${currentUrl}`);
       
       await this.page.waitForSelector('header', { timeout: 5000 });
-      console.log(`[Fetcher] ログイン確認: headerセレクタが見つかりました`);
       return true;
     } catch (error) {
-      console.log(`[Fetcher] ログイン確認: headerセレクタが見つかりません: ${error}`);
       return false;
     }
   }
@@ -588,458 +438,26 @@ export class TaskChuteDataFetcher {
       }
     }
 
-    try {
-      // Step 1: TaskChuteページにアクセスしてログイン確認
-      console.log("Step 1: TaskChuteページでログイン確認...");
-      // React SPAではnetworkidleは到達しないため、domcontentloadedを使用
-      await this.page!.goto("https://taskchute.cloud/taskchute", {
-        waitUntil: "domcontentloaded",
-        timeout: this.options.timeout
-      });
-
-      // Reactコンポーネントのレンダリング完了を待機
-      await this.waitForReactReady();
-      console.log("TaskChuteページのURL:", this.page!.url());
-      
-      // ログイン状況を確認
-      const isLoggedIn = await this.isUserLoggedIn();
-      console.log("ログイン状況:", isLoggedIn);
-      
-      if (!isLoggedIn) {
-        return { success: false, error: "ログインが必要です。先に 'taskchute-cli login' を実行してください。" };
-      }
-
-      // Step 2: CSVエクスポートページに移動
-      console.log("Step 2: CSVエクスポートページに移動中...");
-      // React SPAではnetworkidleは到達しないため、domcontentloadedを使用
-      await this.page!.goto("https://taskchute.cloud/export/csv-export", {
-        waitUntil: "domcontentloaded",
-        timeout: this.options.timeout
-      });
-
-      // Reactコンポーネントのレンダリング完了を待機
-      await this.waitForReactReady();
-
-      const currentUrl = this.page!.url();
-      console.log("CSVエクスポートページのURL:", currentUrl);
-
-      // リダイレクトされた場合の確認
-      if (currentUrl.includes('/login') || currentUrl.includes('/auth')) {
-        return { success: false, error: "ログインページにリダイレクトされました。認証が必要です。" };
-      }
-
-      // Step 3: ページ構造の分析とデバッグ情報の保存
-      console.log("Step 3: ページ構造を分析中...");
-      
-      // スクリーンショットを撮影
-      await this.page!.screenshot({ path: 'tmp/claude/csv-export-page.png', fullPage: true });
-      console.log("✓ スクリーンショットを保存しました");
-
-      // HTMLを保存
-      const csvPageHtml = await this.page!.content();
-      await this.saveHTMLToFile(csvPageHtml, 'tmp/claude/csv-export-page.html');
-      console.log("✓ HTMLファイルを保存しました");
-
-      // ページタイトルを確認
-      const title = await this.page!.title();
-      console.log(`ページタイトル: "${title}"`);
-
-      // Step 4: エクスポート関連要素の検索
-      console.log("Step 4: エクスポート要素を検索中...");
-      
-      // より幅広い要素を検索
-      const allInteractiveElements = await this.page!.locator(
-        'button, input[type="submit"], input[type="button"], a, form, [role="button"], [data-testid], [onclick]'
-      ).all();
-      
-      console.log(`見つかった対話的要素数: ${allInteractiveElements.length}`);
-
-      const exportRelatedElements = [];
-      
-      for (let i = 0; i < allInteractiveElements.length; i++) {
-        const element = allInteractiveElements[i];
-        const text = (await element.textContent() || '').trim();
-        const tagName = await element.evaluate(el => el.tagName);
-        const href = await element.getAttribute('href');
-        const type = await element.getAttribute('type');
-        const dataTestId = await element.getAttribute('data-testid');
-        const onClick = await element.getAttribute('onclick');
-        const className = await element.getAttribute('class');
-        
-        // CSVやエクスポートに関連する要素を特定
-        const isExportRelated = text.toLowerCase().includes('csv') ||
-                               text.toLowerCase().includes('export') ||
-                               text.toLowerCase().includes('ダウンロード') ||
-                               text.toLowerCase().includes('出力') ||
-                               href?.includes('csv') ||
-                               href?.includes('export') ||
-                               dataTestId?.includes('export') ||
-                               dataTestId?.includes('csv');
-        
-        if (isExportRelated || i < 10) { // 最初の10個は全て表示
-          console.log(`要素${i}: ${tagName}`);
-          console.log(`  テキスト: "${text}"`);
-          console.log(`  href: "${href}"`);
-          console.log(`  type: "${type}"`);
-          console.log(`  data-testid: "${dataTestId}"`);
-          console.log(`  class: "${className}"`);
-          console.log(`  onclick: "${onClick}"`);
-          console.log('---');
-          
-          if (isExportRelated) {
-            exportRelatedElements.push({ element, text, href, type, dataTestId });
-          }
-        }
-      }
-
-      console.log(`エクスポート関連要素数: ${exportRelatedElements.length}`);
-
-      // Step 5: 日付範囲フォームの確認と入力
-      console.log("Step 5: MUI DateRangePickerを使用して日付を入力...");
-
-      // MUI DateRangePickerはspinbutton role要素を使用（input要素ではない）
-      // data-range-position="start" / "end" で開始・終了を区別
-      // aria-label で「年」「月」「日」を識別
-
-      // 日付が指定されていない場合は今日の日付を使用
-      const today = new Date();
-      const defaultDate = today.getFullYear().toString() +
-                        (today.getMonth() + 1).toString().padStart(2, '0') +
-                        today.getDate().toString().padStart(2, '0');
-
-      const startDate = fromDate || defaultDate;
-      const endDate = toDate || defaultDate;
-
-      // YYYYMMDD形式を年/月/日に分解
-      const startYear = startDate.substring(0, 4);
-      const startMonth = startDate.substring(4, 6);
-      const startDay = startDate.substring(6, 8);
-      const endYear = endDate.substring(0, 4);
-      const endMonth = endDate.substring(4, 6);
-      const endDay = endDate.substring(6, 8);
-
-      console.log(`設定する日付 - 開始: ${startYear}/${startMonth}/${startDay}, 終了: ${endYear}/${endMonth}/${endDay}`);
-
-      try {
-        // 開始日の年/月/日をそれぞれ入力
-        console.log("開始日を入力中...");
-
-        // 開始日の年フィールドを取得して入力
-        const startYearField = this.page!.locator('[role="spinbutton"][data-range-position="start"][aria-label="年"]');
-        await startYearField.click();
-        await this.page!.waitForTimeout(100);
-        await this.page!.keyboard.type(startYear);
-        await this.page!.waitForTimeout(100);
-
-        // 開始日の月フィールドを取得して入力
-        const startMonthField = this.page!.locator('[role="spinbutton"][data-range-position="start"][aria-label="月"]');
-        await startMonthField.click();
-        await this.page!.waitForTimeout(100);
-        await this.page!.keyboard.type(startMonth);
-        await this.page!.waitForTimeout(100);
-
-        // 開始日の日フィールドを取得して入力
-        const startDayField = this.page!.locator('[role="spinbutton"][data-range-position="start"][aria-label="日"]');
-        await startDayField.click();
-        await this.page!.waitForTimeout(100);
-        await this.page!.keyboard.type(startDay);
-        await this.page!.waitForTimeout(500);
-
-        console.log("終了日を入力中...");
-
-        // 終了日の年フィールドを取得して入力
-        const endYearField = this.page!.locator('[role="spinbutton"][data-range-position="end"][aria-label="年"]');
-        await endYearField.click();
-        await this.page!.waitForTimeout(100);
-        await this.page!.keyboard.type(endYear);
-        await this.page!.waitForTimeout(100);
-
-        // 終了日の月フィールドを取得して入力
-        const endMonthField = this.page!.locator('[role="spinbutton"][data-range-position="end"][aria-label="月"]');
-        await endMonthField.click();
-        await this.page!.waitForTimeout(100);
-        await this.page!.keyboard.type(endMonth);
-        await this.page!.waitForTimeout(100);
-
-        // 終了日の日フィールドを取得して入力
-        const endDayField = this.page!.locator('[role="spinbutton"][data-range-position="end"][aria-label="日"]');
-        await endDayField.click();
-        await this.page!.waitForTimeout(100);
-        await this.page!.keyboard.type(endDay);
-        await this.page!.waitForTimeout(500);
-
-        // 入力値を確認
-        const startYearValue = await startYearField.textContent();
-        const startMonthValue = await startMonthField.textContent();
-        const startDayValue = await startDayField.textContent();
-        const endYearValue = await endYearField.textContent();
-        const endMonthValue = await endMonthField.textContent();
-        const endDayValue = await endDayField.textContent();
-
-        console.log(`入力確認 - 開始: ${startYearValue}/${startMonthValue}/${startDayValue}, 終了: ${endYearValue}/${endMonthValue}/${endDayValue}`);
-
-        console.log("日付入力処理完了");
-
-        // 日付ピッカーのポップアップを閉じるため、ページの他の場所をクリック
-        console.log("日付ピッカーを閉じるため、ページをクリック...");
-        await this.page!.click('body', { position: { x: 10, y: 10 } });
-        await this.page!.waitForTimeout(1000);
-
-        // ダウンロードボタンが有効になるまで待機
-        console.log("ダウンロードボタンが有効になるまで待機中...");
-        try {
-          await this.page!.waitForSelector('button:has-text("ダウンロード"):not(.Mui-disabled)', { timeout: 10000 });
-          console.log("ダウンロードボタンが有効になりました");
-        } catch (error) {
-          console.log("ダウンロードボタンの有効化待機がタイムアウトしました");
-          // デバッグ情報を追加
-          const buttonState = await this.page!.locator('button:has-text("ダウンロード")').first().evaluate((el) => {
-            return {
-              disabled: (el as HTMLButtonElement).disabled,
-              classList: Array.from(el.classList),
-              ariaDisabled: el.getAttribute('aria-disabled')
-            };
-          });
-          console.log("ダウンロードボタンの状態:", buttonState);
-
-          // スクリーンショットを保存
-          const debugPath = `tmp/claude/button-disabled-${Date.now()}.png`;
-          await this.page!.screenshot({ path: debugPath, fullPage: true });
-          console.log(`デバッグスクリーンショット: ${debugPath}`);
-        }
-
-      } catch (error) {
-        console.error("日付入力エラー:", error);
-        // エラー時のデバッグ情報を保存
-        const debugPath = `tmp/claude/date-input-error-${Date.now()}.png`;
-        await this.page!.screenshot({ path: debugPath, fullPage: true });
-        console.log(`エラー時のスクリーンショット: ${debugPath}`);
-      }
-
-      // Step 6: ダウンロードボタンをクリック
-      console.log("Step 6: ダウンロードボタンをクリック中...");
-      
-      // 複数のセレクタでダウンロードボタンを検索
-      const downloadButtonSelectors = [
-        // FileDownloadIconを含むボタン
-        'button:has([data-testid="FileDownloadIcon"])',
-        // ダウンロードテキストを含むMUIボタン
-        'button.MuiButton-root:has-text("ダウンロード")',
-        // 一般的なダウンロードボタン
-        'button:has-text("ダウンロード")',
-        'button:has-text("Download")',
-        // SVGアイコンを含むボタン
-        'button:has(svg[data-testid="FileDownloadIcon"])'
-      ];
-      
-      let downloadButton = null;
-      for (const selector of downloadButtonSelectors) {
-        try {
-          const button = this.page!.locator(selector).first();
-          if (await button.isVisible({ timeout: 1000 })) {
-            downloadButton = button;
-            console.log(`ダウンロードボタンを発見: ${selector}`);
-            break;
-          }
-        } catch {
-          // 次のセレクタを試す
-        }
-      }
-      
-      if (downloadButton) {
-        // ボタンの状態を確認
-        const buttonInfo = await downloadButton.evaluate((el) => {
-          const button = el as HTMLButtonElement;
-          return {
-            disabled: button.disabled,
-            ariaDisabled: button.getAttribute('aria-disabled'),
-            classList: Array.from(button.classList).join(' '),
-            text: button.textContent?.trim()
-          };
-        });
-        console.log("ダウンロードボタンの情報:", buttonInfo);
-        
-        try {
-          console.log("ダウンロードボタンをクリック中...");
-          
-          // 日付ピッカーのツールチップが表示されていないか確認
-          const tooltips = await this.page!.locator('[role="tooltip"]').all();
-          if (tooltips.length > 0) {
-            console.log("ツールチップが表示されています。閉じるため、ページをクリック...");
-            await this.page!.click('body', { position: { x: 10, y: 10 } });
-            await this.page!.waitForTimeout(1000);
-          }
-          
-          // ダウンロードディレクトリの確認用に現在時刻を記録
-          const downloadStartTime = Date.now();
-          
-          // ボタンをクリック（必要に応じて強制的に）
-          if (buttonInfo.disabled) {
-            console.log("ボタンが無効状態ですが、強制的にクリックを試みます");
-            await downloadButton.click({ force: true });
-          } else {
-            // 通常のクリックが失敗する場合、JavaScript経由でクリック
-            try {
-              await downloadButton.click();
-            } catch (clickError) {
-              console.log("通常のクリックが失敗。JavaScript経由でクリックを試みます...");
-              await downloadButton.evaluate((el) => (el as HTMLButtonElement).click());
-            }
-          }
-          console.log("ダウンロードボタンをクリックしました");
-          
-          // クリック後のページ状態を確認
-          await this.page!.waitForTimeout(2000);
-          
-          // エラーメッセージやスナックバーを確認
-          const snackbar = await this.page!.locator('.MuiSnackbar-root, [role="alert"]').first();
-          if (await snackbar.isVisible({ timeout: 1000 })) {
-            const snackbarText = await snackbar.textContent();
-            console.log("スナックバーメッセージ:", snackbarText);
-          }
-          
-          // クリック後の処理を待つ
-          await this.page!.waitForTimeout(3000);
-          
-          // ダウンロードディレクトリを確認
-          console.log("ダウンロードディレクトリを確認中...");
-          const downloadDir = `${Deno.env.get("HOME")}/Downloads`;
-          let foundFile = null;
-          
-          try {
-            const files = await Deno.readDir(downloadDir);
-            
-            // 最近のファイルを探す（CSVファイルは拡張子がない場合がある）
-            const recentFiles = [];
-            for await (const file of files) {
-              // CSVファイルまたはUUID形式のファイル名をチェック
-              if (file.name.endsWith(".csv") || 
-                  /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(file.name)) {
-                const filePath = `${downloadDir}/${file.name}`;
-                const stat = await Deno.stat(filePath);
-                recentFiles.push({ name: file.name, path: filePath, mtime: stat.mtime!.getTime() });
-              }
-            }
-            
-            // 最新のファイルを確認
-            recentFiles.sort((a, b) => b.mtime - a.mtime);
-            
-            if (recentFiles.length > 0) {
-              console.log(`最近のダウンロード候補:`);
-              for (let i = 0; i < Math.min(3, recentFiles.length); i++) {
-                const file = recentFiles[i];
-                console.log(`  ${i+1}. ${file.name} (${new Date(file.mtime).toLocaleString()})`);
-                
-                // クリック後に作成されたファイルかチェック
-                if (file.mtime >= downloadStartTime - 5000) { // 5秒のマージン
-                  // ファイルタイプを確認
-                  const fileContent = await Deno.readTextFile(file.path);
-                  if (fileContent.includes('","') || fileContent.includes(',')) {
-                    console.log(`  → CSVファイルとして検出`);
-                    foundFile = file.path;
-                    break;
-                  }
-                }
-              }
-            }
-            
-            if (foundFile) {
-              // ファイルを指定ディレクトリにコピー（.csv拡張子を付ける）
-              const targetDir = downloadPath || 'tmp/claude';
-
-              // ターゲットディレクトリが存在しない場合は作成
-              if (downloadPath) {
-                await ensureDir(downloadPath);
-              }
-
-              // ファイル名を生成（YYYYMMDD形式をそのまま使用）
-              const targetPath = `${targetDir}/tasks_${startDate}_${endDate}.csv`;
-              await Deno.copyFile(foundFile, targetPath);
-              console.log(`✅ CSVファイルをコピー: ${targetPath}`);
-              
-              // ファイルサイズを確認
-              const fileInfo = await Deno.stat(targetPath);
-              console.log(`ファイルサイズ: ${fileInfo.size.toLocaleString()} bytes`);
-              
-              // 元ファイルを削除（オプション）
-              try {
-                await Deno.remove(foundFile);
-                console.log(`元ファイルを削除: ${foundFile}`);
-              } catch (e) {
-                // 削除エラーは無視
-              }
-              
-              // CSVをパース
-              try {
-                const parser = new TaskChuteCsvParser();
-                const tasks = await parser.parseFile(targetPath);
-                console.log(`\nCSVパース完了: ${tasks.length}件のタスクを抽出`);
-                
-                // 統計情報を表示
-                const stats = parser.calculateStats(tasks);
-                console.log(`完了: ${stats.completedTasks}件, 進行中: ${stats.inProgressTasks}件, 未実施: ${stats.pendingTasks}件`);
-                console.log(`合計時間: ${Math.floor(stats.totalDuration / 60)}時間${stats.totalDuration % 60}分`);
-                
-                return { success: true, tasks, downloadPath: targetPath };
-              } catch (parseError) {
-                console.error("CSVパースエラー:", parseError);
-                // パースエラーでもダウンロードは成功として扱う
-                return { success: true, tasks: [], downloadPath: targetPath };
-              }
-            } else {
-              // ダウンロードイベントを待機（フォールバック）
-              console.log("ダウンロードファイルが見つからないため、イベントを待機します...");
-              
-              try {
-                const download = await this.page!.waitForEvent('download', { timeout: 10000 });
-                console.log(`ダウンロードイベントを検出: ${download.suggestedFilename()}`);
-
-                // ファイル名を生成（YYYYMMDD形式をそのまま使用）
-                const fallbackPath = `tmp/claude/tasks_${startDate}_${endDate}.csv`;
-                await download.saveAs(fallbackPath);
-                console.log(`CSVファイルを保存: ${fallbackPath}`);
-
-                return { success: true, tasks: [], downloadPath: fallbackPath };
-              } catch (downloadError) {
-                console.error("ダウンロードイベントの待機でエラー:", downloadError);
-                throw new Error("CSVファイルのダウンロードに失敗しました");
-              }
-            }
-          } catch (error) {
-            console.error("ダウンロードディレクトリの確認でエラー:", error);
-            throw error;
-          }
-          
-        } catch (error) {
-          console.error("ダウンロードエラー:", error);
-          
-          // エラー時のスクリーンショット
-          const errorScreenshot = `tmp/claude/download-error-${Date.now()}.png`;
-          await this.page!.screenshot({ path: errorScreenshot, fullPage: true });
-          console.log(`エラースクリーンショット: ${errorScreenshot}`);
-          
-          return { success: false, error: `ダウンロードに失敗しました: ${error}` };
-        }
-      } else {
-        console.log("ダウンロードボタンが見つかりません");
-        
-        // デバッグ用：ページ内のすべてのボタンを確認
-        const allButtons = await this.page!.locator('button').all();
-        console.log(`ページ内のボタン総数: ${allButtons.length}`);
-        for (let i = 0; i < Math.min(allButtons.length, 5); i++) {
-          const text = await allButtons[i].textContent();
-          console.log(`ボタン${i + 1}: ${text?.trim()}`);
-        }
-        
-        return { success: false, error: "ダウンロードボタンが見つかりません" };
-      }
-
-      return { success: true, tasks: [] };
-
-    } catch (error) {
-      console.error("CSVエクスポートページでエラー:", error);
-      return { success: false, error: (error as Error).message };
+    // Step 1: Login check — must be done before delegating to CSVDownloader
+    await this.page!.goto("https://taskchute.cloud/taskchute", {
+      waitUntil: "domcontentloaded",
+      timeout: this.options.timeout
+    });
+    await this.waitForReactReady();
+    const isLoggedIn = await this.isUserLoggedIn();
+    if (!isLoggedIn) {
+      return { success: false, error: "ログインが必要です。先に 'taskchute-cli login' を実行してください。" };
     }
+
+    // Why: CSV download logic delegated to CSVDownloader — fetcher.ts is orchestration only
+    const downloader = new CSVDownloader();
+    const result = await downloader.downloadCSV(this.page!, {
+      fromDate,
+      toDate,
+      outputDir: downloadPath,
+    });
+    // Why: Adapter — CSVDownloadResult to FetchResult<TaskData[]> conversion
+    return { success: result.success, data: result.tasks, error: result.error };
   }
 
   /**
@@ -1057,174 +475,8 @@ export class TaskChuteDataFetcher {
     }
 
     try {
-      // 最初にページが読み込まれるまで待機
-      await this.page.waitForLoadState('networkidle');
-      
-      // ReactアプリのJavaScript初期化を待機
-      await this.page.waitForTimeout(5000);
-      
-      // スケルトンローディングが完了するまで待機
-      try {
-        await this.page.locator('span.MuiSkeleton-root').first().waitFor({ state: 'hidden', timeout: 30000 });
-      } catch {
-        // スケルトン待機が失敗してもデータ取得を試行
-      }
-      
-      // 実際のタスクデータがレンダリングされるまで待機
-      try {
-        await this.page.locator('div[role="rowgroup"] > div.MuiStack-root, div.MuiStack-root.my-csffzd').first().waitFor({ timeout: 20000 });
-      } catch {
-        // タスクデータ待機が失敗してもデータ取得を試行
-      }
-      
-      // 追加の安全な待機時間
-      await this.page.waitForTimeout(3000);
-
-      const tasks: TaskData[] = [];
-      
-      // Issue #3の方針に基づく堅牢な実装
-      
-      // より広範囲のセレクタでタスク行要素の検索を試行
-      let taskRows: any[] = [];
-      const rowSelectors = [
-        'div[role="rowgroup"] > div.MuiStack-root',
-        'div[role="grid"] > div.MuiStack-root', 
-        'div.MuiStack-root.my-csffzd',
-        'div.MuiStack-root[class*="my-"]',
-        'div[data-testid*="task"]',
-        'div[class*="task"]'
-      ];
-      
-      for (const selector of rowSelectors) {
-        try {
-          const rows = await this.page.locator(selector).all();
-          if (rows.length > taskRows.length) {
-            taskRows = rows;
-            break;
-          }
-        } catch (error) {
-          continue;
-        }
-      }
-      
-      // MuiStackベースの抽出をフォールバックとして使用
-      if (taskRows.length === 0) {
-        taskRows = await this.page.locator('div.MuiStack-root.my-csffzd').all();
-      }
-      
-      for (const row of taskRows) {
-        try {
-          // 行内のボックス要素を取得
-          const columns = await row.locator(':scope > .MuiBox-root').all();
-          
-          if (columns.length >= 6) {
-            // 列インデックスベースでの抽出を試行
-            const startTime = (await columns[1].textContent() || '').trim();
-            const endTime = (await columns[2].textContent() || '').trim();
-            let title = (await columns[3].textContent() || '').trim();
-            const estimatedTime = (await columns[4].textContent() || '').trim();
-            const actualTime = (await columns[5].textContent() || '').trim();
-            
-            // デバッグ用：処理前のタスク名を記録
-            const originalTitle = title;
-            
-            // タスク名の精製処理
-            title = title
-              .replace(/^(枠:|と|:--|--:|・)+/, '') // 不要な接頭辞を削除
-              .replace(/(枠:|と|:--|--:|・)+$/, '') // 不要な接尾辞を削除  
-              .replace(/\s*:--\s*/g, '') // 「:--」を削除
-              .replace(/^\s*・\s*/, '') // 先頭の「・」を削除
-              .replace(/^枠$/, '') // 単独の「枠」を削除
-              .replace(/^と$/, '') // 単独の「と」を削除
-              .trim();
-              
-            // デバッグ用：問題のあるタスク名を特定
-            if (originalTitle === '枠:--' || originalTitle === 'と') {
-              console.log(`問題のタスク: "${originalTitle}" -> "${title}"`);
-            }
-            
-            // ステータス判定
-            let status = 'unknown';
-            try {
-              const svgElement = await columns[0].locator('svg').first();
-              const testId = await svgElement.getAttribute('data-testid');
-              status = testId === 'CheckIcon' ? 'completed' : 
-                      testId === 'PlayArrowIcon' ? 'in-progress' : 
-                      testId === 'PauseIcon' ? 'paused' : 'unknown';
-            } catch {}
-            
-            // タスクの有効性を判定（より厳密なチェック）
-            const isValidTask = title && 
-                               title.length > 1 && // 最低2文字以上
-                               title.length < 200 &&
-                               startTime && 
-                               endTime && 
-                               !title.includes('終了予定') && 
-                               !title.includes('Start期間') &&
-                               !title.includes('ヘッダー') &&
-                               !title.includes('合計') &&
-                               originalTitle !== '枠:--' && // 元の「枠:--」を除外
-                               originalTitle !== 'と' && // 元の「と」を除外
-                               !/^[:・\-\s]+$/.test(title) && // 記号のみのタイトルを除外
-                               !/^(枠|と|・)+$/.test(title); // 不要文字のみを除外
-            
-            if (isValidTask) {
-              tasks.push({
-                id: `task-${tasks.length}`,
-                title: title,
-                status: status,
-                startTime: startTime.replace('--:--', ''),
-                endTime: endTime.replace('--:--', ''),
-                estimatedTime: estimatedTime.replace('--:--', ''),
-                actualTime: actualTime.replace('--:--', ''),
-                category: '',
-                description: '',
-              });
-            }
-          } else {
-            // フォールバック：MuiStackテキストベース抽出
-            const stackText = await row.textContent();
-            const timeMatches = stackText?.match(/\d{1,2}:\d{2}/g);
-            
-            if (timeMatches && timeMatches.length >= 2) {
-              const startTime = timeMatches[0];
-              const endTime = timeMatches[1];
-              const estimatedTime = timeMatches[2] || '';
-              const actualTime = timeMatches[3] || '';
-              
-              // タスク名抽出（簡略版）
-              let taskName = stackText?.replace(/(\d{1,2}:\d{2}|--:--)/g, ' ')
-                                      .replace(/\s+/g, ' ')
-                                      .replace(/(タグ|プロジェクト|routine|condition|モード)$/, '')
-                                      .trim() || '';
-              
-              if (taskName.length > 0 && taskName.length < 100 &&
-                  !taskName.includes('終了予定') && !taskName.includes('Start期間')) {
-                tasks.push({
-                  id: `task-${tasks.length}`,
-                  title: taskName,
-                  status: 'unknown',
-                  startTime: startTime,
-                  endTime: endTime,
-                  estimatedTime: estimatedTime,
-                  actualTime: actualTime,
-                  category: '',
-                  description: '',
-                });
-              }
-            }
-          }
-        } catch (error) {
-          continue;
-        }
-      }
-      
-      if (tasks.length === 0) {
-        return { success: false, error: "No tasks found on the page" };
-      }
-
-      return { success: true, tasks };
-
+      // Why: スクレイピングロジックを fetcher-helpers.ts に委譲し、fetcher.ts の行数を削減
+      return await scrapeTaskData(this.page);
     } catch (error) {
       return { success: false, error: (error as Error).message };
     }
@@ -1246,24 +498,8 @@ export class TaskChuteDataFetcher {
     if (!this.page) {
       return { success: false, error: "No active browser page" };
     }
-
-    try {
-      const stats = await this.page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll("tbody > tr")) as Element[];
-        return rows.map(row => {
-          const columns = row.querySelectorAll("td");
-          return {
-            startTime: columns[0]?.textContent?.trim(),
-            endTime: columns[1]?.textContent?.trim(),
-            estimateTime: columns[2]?.textContent?.trim(),
-            actualTime: columns[3]?.textContent?.trim(),
-          };
-        });
-      });
-      return { success: true, data: stats };
-    } catch (error) {
-      return { success: false, error: (error as Error).message };
-    }
+    // Why: ロジックを fetcher-helpers.ts に委譲
+    return _getDailyTaskStats(this.page);
   }
 
   /**
@@ -1273,14 +509,8 @@ export class TaskChuteDataFetcher {
    * @returns 保存結果
    */
   async saveHTMLToFile(html: string, filePath: string): Promise<SaveResult> {
-    try {
-      await ensureDir(filePath.substring(0, filePath.lastIndexOf('/')));
-      await Deno.writeTextFile(filePath, html);
-      return { success: true, filePath };
-
-    } catch (error) {
-      return { success: false, error: (error as Error).message };
-    }
+    // Why: ロジックを fetcher-helpers.ts に委譲
+    return _saveHTMLToFile(html, filePath);
   }
 
   /**
@@ -1290,35 +520,8 @@ export class TaskChuteDataFetcher {
    * @returns 保存結果
    */
   async saveJSONToFile(data: any, filePath: string): Promise<SaveResult> {
-    try {
-      await ensureDir(filePath.substring(0, filePath.lastIndexOf('/')));
-      const jsonString = JSON.stringify(data, null, 2);
-      await Deno.writeTextFile(filePath, jsonString);
-      return { success: true, filePath };
-
-    } catch (error) {
-      return { success: false, error: (error as Error).message };
-    }
-  }
-
-  /**
-   * スクリーンショットを撮る
-   * @param filePath 保存先のファイルパス
-   * @returns 保存結果
-   */
-  async takeScreenshot(filePath: string): Promise<SaveResult> {
-    if (!this.page) {
-      return { success: false, error: "No active browser page" };
-    }
-
-    try {
-      await ensureDir(filePath.substring(0, filePath.lastIndexOf('/')));
-      await this.page.screenshot({ path: filePath, fullPage: true });
-      return { success: true, filePath };
-
-    } catch (error) {
-      return { success: false, error: (error as Error).message };
-    }
+    // Why: ロジックを fetcher-helpers.ts に委譲
+    return _saveJSONToFile(data, filePath);
   }
 
   /**
@@ -1351,3 +554,6 @@ export class TaskChuteDataFetcher {
     }
   }
 }
+
+// Why: re-export instead of keeping definitions here — backward compatibility for tests importing from fetcher.ts
+export type { FetcherOptions, TaskData, FetchResult, NavigationResult, AuthResult, SaveResult } from "./types.ts";

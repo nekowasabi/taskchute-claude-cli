@@ -5,7 +5,7 @@
  */
 import { Page, Locator, Response } from "playwright";
 import { ensureDir } from "std/fs/mod.ts";
-import { TaskData } from "./fetcher.ts";
+import { TaskData } from "./types.ts";
 import { TaskChuteCsvParser } from "./csv-parser.ts";
 
 /**

@@ -254,6 +254,129 @@ export function getBrowserLaunchOptions(platformInfo: PlatformInfo): {
 }
 
 /**
+ * launchPersistentContext に渡すプラットフォーム固有の起動設定
+ *
+ * profilePath は Deno.env 依存のため fetcher.ts 側で組み立てるが、
+ * profilePath の種別（mac/wslg/wsl/default）を useDefaultUserDataDir フラグで区別する。
+ *
+ * Why: getBrowserLaunchOptions の戻り値は channel/useExistingProfile のみで
+ *      args/ignoreDefaultArgs/acceptDownloads 等が不足していたため、
+ *      fetcher.ts の launchBrowser 内に isMac/isWSL/isWSLg の直接分岐が残っていた。
+ *      それらを platform.ts に集約し、fetcher.ts から各フラグの直接参照をゼロにする。
+ */
+export interface PlatformLaunchConfig {
+  /** Playwright channel ('chrome' | 'chromium' | undefined) */
+  channel?: string;
+  /** 直接実行パス（現在は未使用、将来の拡張用） */
+  executablePath?: string;
+  /** launchPersistentContext に渡す args */
+  args: string[];
+  /** デフォルト引数から除外するフラグ */
+  ignoreDefaultArgs?: string[];
+  /** ダウンロードを受け入れるか */
+  acceptDownloads: boolean;
+  /** Playwright 既存プロファイルを使用するか（true = this.options.userDataDir を使用） */
+  useExistingProfile: boolean;
+  /**
+   * プラットフォーム固有のプロファイルパスを使用するか
+   * true の場合 fetcher.ts 側で HOME 配下のプロファイルパスを構築する
+   * false の場合 this.options.userDataDir をそのまま使用する
+   */
+  usePlatformProfilePath: boolean;
+  /** usePlatformProfilePath=true の場合のプロファイルサブパス（HOME からの相対） */
+  platformProfileSubPath?: string;
+  /**
+   * WSLg 固有: navigator.webdriver 偽装スクリプトを注入するか
+   * Google の自動化検出バイパスに必要
+   */
+  injectWebdriverSpoof: boolean;
+  /**
+   * Cookie 注入が必要か（WSL/WSLg 環境で保存済み Cookie を使用する場合）
+   */
+  injectSavedCookies: boolean;
+}
+
+/**
+ * プラットフォームに応じた完全な launchPersistentContext 設定を返す
+ *
+ * fetcher.ts の launchBrowser 内の isMac/isWSL/isWSLg 直接分岐を
+ * この関数に集約することで、fetcher.ts からプラットフォームフラグの直接参照を排除する。
+ */
+export function getFullLaunchConfig(platformInfo: PlatformInfo): PlatformLaunchConfig {
+  if (platformInfo.isMac) {
+    return {
+      channel: 'chrome',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      acceptDownloads: true,
+      useExistingProfile: true,
+      usePlatformProfilePath: false,
+      injectWebdriverSpoof: false,
+      injectSavedCookies: false,
+    };
+  } else if (platformInfo.isWindows) {
+    return {
+      channel: 'chrome',
+      args: ['--no-first-run', '--no-default-browser-check'],
+      acceptDownloads: false,
+      useExistingProfile: true,
+      usePlatformProfilePath: false,
+      injectWebdriverSpoof: false,
+      injectSavedCookies: false,
+    };
+  } else if (platformInfo.isWSLg) {
+    // WSLg環境: Linux版Google Chromeを使用
+    // --enable-automation を除外してGoogle の自動化検出をバイパスする
+    // Why: ignoreDefaultArgs で --enable-automation を除外しないと
+    //      Google が「This browser or app may not be secure」を表示してログインをブロックする
+    return {
+      channel: 'chrome',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-infobars',
+      ],
+      ignoreDefaultArgs: ['--enable-automation'],
+      acceptDownloads: true,
+      useExistingProfile: false,
+      usePlatformProfilePath: true,
+      platformProfileSubPath: '.taskchute/chrome-profile',
+      injectWebdriverSpoof: true,
+      injectSavedCookies: true,
+    };
+  } else if (platformInfo.isWSL) {
+    // WSL（非WSLg）: Playwright組み込みChromiumを使用
+    // Why: Windows側のChromeはWSL-Windows間の通信問題があるため使用しない
+    return {
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+      ],
+      acceptDownloads: true,
+      useExistingProfile: false,
+      usePlatformProfilePath: true,
+      platformProfileSubPath: '.taskchute/chromium-profile',
+      injectWebdriverSpoof: false,
+      injectSavedCookies: true,
+    };
+  } else {
+    // その他の環境（Linux等）
+    return {
+      args: [],
+      acceptDownloads: false,
+      useExistingProfile: true,
+      usePlatformProfilePath: false,
+      injectWebdriverSpoof: false,
+      injectSavedCookies: false,
+    };
+  }
+}
+
+/**
  * プラットフォーム情報をログ出力
  */
 export function logPlatformInfo(info: PlatformInfo): void {

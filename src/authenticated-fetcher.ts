@@ -7,7 +7,7 @@ import { chromium, Browser, Page, BrowserContext } from "playwright";
 import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
 import { SessionManager } from "./session-manager.ts";
-import { FetcherOptions, TaskData, FetchResult, NavigationResult } from "./fetcher.ts";
+import { FetcherOptions, TaskData, FetchResult, NavigationResult } from "./types.ts";
 import { detectPlatform, getBrowserLaunchOptions } from "./platform.ts";
 
 /**

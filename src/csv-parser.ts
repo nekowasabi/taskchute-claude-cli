@@ -4,7 +4,7 @@
  */
 
 import { parse } from "std/csv/mod.ts";
-import { TaskData } from "./fetcher.ts";
+import { TaskData } from "./types.ts";
 
 /**
  * CSVレコードの型定義

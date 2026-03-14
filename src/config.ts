@@ -1,7 +1,7 @@
 import { ensureDir } from "std/fs/mod.ts";
 import { join } from "std/path/mod.ts";
 import { LoginCredentials } from "./auth.ts";
-import { FetcherOptions } from "./fetcher.ts";
+import { FetcherOptions } from "./types.ts";
 
 /**
  * 設定オブジェクトのインターフェース
