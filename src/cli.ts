@@ -26,10 +26,10 @@ export class CLI {
 
   constructor() {
     this.config = new ConfigManager();
-    
+
     const authConfig = this.config.getAuthConfig();
     this.auth = new TaskChuteAuth(authConfig);
-    
+
     const fetcherOptions = this.config.getFetcherOptions();
     this.fetcher = new TaskChuteDataFetcher(fetcherOptions);
   }
@@ -41,34 +41,34 @@ export class CLI {
   static async createForPlatform(): Promise<CLI> {
     // プラットフォーム検出とログイン方法の決定
     const loginMethod = await TaskChuteAuth.detectLoginMethod();
-    
+
     // ConfigManagerを作成して設定を更新
     const config = new ConfigManager();
-    
+
     if (!loginMethod.needsCredentials && loginMethod.chromeProfilePath) {
       // Chromeプロファイルを使用する場合は、ダミーの認証情報を設定
       await config.saveConfig({
         auth: {
           email: "chrome-profile@example.com",
-          password: "chrome-profile"
+          password: "chrome-profile",
         },
         fetcher: {
-          userDataDir: loginMethod.chromeProfilePath
-        }
+          userDataDir: loginMethod.chromeProfilePath,
+        },
       });
     }
-    
+
     // CLIインスタンスを作成
     const cli = new CLI();
     cli.loginMethod = loginMethod;
-    
+
     // Chromeプロファイルが使用可能な場合は、fetcherのuserDataDirを更新
     if (!loginMethod.needsCredentials && loginMethod.chromeProfilePath) {
       cli.fetcher.updateOptions({
-        userDataDir: loginMethod.chromeProfilePath
+        userDataDir: loginMethod.chromeProfilePath,
       });
     }
-    
+
     return cli;
   }
 
@@ -77,7 +77,17 @@ export class CLI {
    * @returns コマンド名の配列
    */
   getAvailableCommands(): string[] {
-    return ["login", "fetch", "status", "check-login", "stats", "save-html", "csv-test", "csv-download", "import-cookies"];
+    return [
+      "login",
+      "fetch",
+      "status",
+      "check-login",
+      "stats",
+      "save-html",
+      "csv-test",
+      "csv-download",
+      "import-cookies",
+    ];
   }
 
   /**
@@ -180,10 +190,10 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    */
   private parseOptions(args: string[]): Record<string, any> {
     const options: Record<string, any> = {};
-    
+
     for (let i = 0; i < args.length; i++) {
       const arg = args[i];
-      
+
       if (arg === "--headless") {
         options.headless = true;
       } else if (arg === "--browser") {
@@ -202,7 +212,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         options.file = arg;
       }
     }
-    
+
     return options;
   }
 
@@ -214,10 +224,110 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    */
   private async handleLogin(options: Record<string, any>): Promise<CLIResult> {
     try {
-      console.log("ブラウザを起動します。TaskChute Cloudにログインしてください...");
+      // Why: Chrome は前回の終了が不正だった場合にセッション復元ダイアログを表示し
+      //      Playwright の goto が about:blank から遷移できなくなる。
+      //      Last Session / Last Tabs ファイルを削除することで新鮮な状態で起動する。
+      const home = Deno.env.get("HOME") || ".";
+      const profileRoot = `${home}/.taskchute/chrome-profile`;
+      const profileDefault = `${profileRoot}/Default`;
+      // セッション復元ダイアログ防止
+      for (const f of ["Last Session", "Last Tabs", "Last Browser"]) {
+        try {
+          await Deno.remove(`${profileDefault}/${f}`);
+        } catch { /* 存在しない場合は無視 */ }
+      }
+      // Why: Chromeクラッシュ繰り返しで GrShaderCache / ShaderCache / GPUCache が破損すると
+      //      GPU初期化が無限待機になり launchPersistentContext が120秒タイムアウトする。
+      //      GCM Store が存在すると GCM 初期化（非推奨エンドポイント）で Chrome 起動がハングする。
+      //      login 前にこれらをクリアして確実に初期化できる状態にする。
+      for (
+        const cacheDir of ["GrShaderCache", "ShaderCache", "GraphiteDawnCache"]
+      ) {
+        try {
+          await Deno.remove(`${profileRoot}/${cacheDir}`, { recursive: true });
+        } catch { /* 存在しない場合は無視 */ }
+      }
+      for (const cacheDir of ["GPUCache", "GCM Store"]) {
+        try {
+          await Deno.remove(`${profileDefault}/${cacheDir}`, {
+            recursive: true,
+          });
+        } catch { /* 存在しない場合は無視 */ }
+      }
+
+      // Why: login コマンドはユーザーが手動でブラウザ操作するため headless モードでは動作しない
+      if (options.headless === true) {
+        console.error(
+          "エラー: login コマンドはブラウザ表示が必要なため --headless では使用できません。",
+        );
+        console.error(
+          "ヒント: --headless なしで実行してください: deno task start login",
+        );
+        return {
+          success: false,
+          command: "login",
+          error: "--headless is not supported for login",
+        };
+      }
+
+      // ログイン済みチェック: 既にセッションが有効な場合は即終了（冪等性）
+      // Why: 何度実行しても正しく動くべき。ブラウザ起動は goto が固まるリスクがあるため
+      //      セッションが有効であればブラウザなしで確認して終了する。
+      const alreadyLoggedIn = await this.auth.isLoggedIn();
+      if (alreadyLoggedIn) {
+        const session = await this.auth.getStoredSession();
+        const loginTime = session
+          ? new Date(session.loggedInAt).toLocaleString("ja-JP")
+          : "不明";
+        const expiresAt = session
+          ? new Date(session.loggedInAt + 24 * 60 * 60 * 1000).toLocaleString(
+            "ja-JP",
+          )
+          : "不明";
+        console.log(
+          `✅ ログイン済みです（ログイン: ${loginTime}、有効期限: ${expiresAt}）`,
+        );
+        console.log(
+          "再ログインが必要な場合は ~/.taskchute/session.json を削除してから実行してください。",
+        );
+        return { success: true, command: "login" };
+      }
+
+      console.log(
+        "ブラウザを起動します。TaskChute Cloudにログインしてください...",
+      );
       this.fetcher.updateOptions({ headless: false });
 
-      const browserResult = await this.fetcher.launchBrowser();
+      let browserResult = await this.fetcher.launchBrowser();
+      if (!browserResult.success) {
+        // Why: WSLg 環境では前回セッションのキャッシュ残留で1回目が失敗することがある。
+        //      キャッシュを再クリアして1回だけ自動リトライする。
+        console.log(
+          "ブラウザ起動に失敗しました。キャッシュをクリアして再試行します...",
+        );
+        for (
+          const cacheDir of [
+            "GrShaderCache",
+            "ShaderCache",
+            "GraphiteDawnCache",
+          ]
+        ) {
+          try {
+            await Deno.remove(`${profileRoot}/${cacheDir}`, {
+              recursive: true,
+            });
+          } catch { /* ignore */ }
+        }
+        for (const cacheDir of ["GPUCache", "GCM Store"]) {
+          try {
+            await Deno.remove(`${profileDefault}/${cacheDir}`, {
+              recursive: true,
+            });
+          } catch { /* ignore */ }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        browserResult = await this.fetcher.launchBrowser();
+      }
       if (!browserResult.success) {
         console.error(`ブラウザの起動に失敗しました: ${browserResult.error}`);
         return { success: false, command: "login", error: browserResult.error };
@@ -225,7 +335,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
       const navResult = await this.fetcher.navigateToTaskChute();
       if (!navResult.success) {
-        console.error(`TaskChute Cloudへのアクセスに失敗しました: ${navResult.error}`);
+        console.error(
+          `TaskChute Cloudへのアクセスに失敗しました: ${navResult.error}`,
+        );
         return { success: false, command: "login", error: navResult.error };
       }
 
@@ -236,7 +348,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         console.log("ログイン成功を検知しました。認証情報を保存しています...");
         await this.auth.createSession();
         await this.fetcher.cleanup(); // ブラウザを閉じてセッションを保存
-        console.log("ログインに成功しました。`fetch`コマンドなどが利用できます。");
+        console.log(
+          "ログインに成功しました。`fetch`コマンドなどが利用できます。",
+        );
         return { success: true, command: "login" };
       } else {
         console.error("ログインが確認できませんでした。タイムアウトしました。");
@@ -258,7 +372,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    * @returns CLIの実行結果
    * @private
    */
-  private async handleCheckLogin(options: Record<string, any>): Promise<CLIResult> {
+  private async handleCheckLogin(
+    options: Record<string, any>,
+  ): Promise<CLIResult> {
     try {
       console.log("TaskChute Cloudへのログイン状態を確認しています...");
 
@@ -274,7 +390,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
       if (error) {
         console.log("ログイン状態の確認に失敗しました。");
-        console.log("`taskchute-cli login` を実行して、手動でログインしてください。");
+        console.log(
+          "`taskchute-cli login` を実行して、手動でログインしてください。",
+        );
         return { success: false, command: "check-login", error };
       }
 
@@ -283,7 +401,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
         // ログイン成功時にセッションを更新
         await this.auth.createSession();
       } else {
-        console.log("未ログインです。`taskchute-cli login` を実行して、手��でログインしてください。");
+        console.log(
+          "未ログインです。`taskchute-cli login` を実行して、手��でログインしてください。",
+        );
       }
 
       return { success: isLoggedIn, command: "check-login" };
@@ -306,7 +426,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     try {
       await this.fetcher.navigateToTaskChute();
       if (!await this.fetcher.isUserLoggedIn()) {
-        return { success: false, command: "stats", error: "ログインしていません。`taskchute-cli login` を実行してください。" };
+        return {
+          success: false,
+          command: "stats",
+          error:
+            "ログインしていません。`taskchute-cli login` を実行してください。",
+        };
       }
 
       console.log("今日のタスクの統計情報を取得中...");
@@ -339,7 +464,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    * @returns CLIの実行結果
    * @private
    */
-  private async handleSaveHtml(options: Record<string, any>): Promise<CLIResult> {
+  private async handleSaveHtml(
+    options: Record<string, any>,
+  ): Promise<CLIResult> {
     try {
       if (!options.output) {
         throw new Error("--output オプションは必須です");
@@ -347,7 +474,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
       await this.fetcher.navigateToTaskChute();
       if (!await this.fetcher.isUserLoggedIn()) {
-        return { success: false, command: "save-html", error: "ログインしていません。`taskchute-cli login` を実行してください。" };
+        return {
+          success: false,
+          command: "save-html",
+          error:
+            "ログインしていません。`taskchute-cli login` を実行してください。",
+        };
       }
 
       console.log(`現在のページのHTMLを ${options.output} に保存中...`);
@@ -381,30 +513,36 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    * @returns CLIの実行結果
    * @private
    */
-  private async handleCSVTest(options: Record<string, any>): Promise<CLIResult> {
+  private async handleCSVTest(
+    options: Record<string, any>,
+  ): Promise<CLIResult> {
     try {
       // 日付オプションの処理 (YYYY-MM-DD形式をYYYYMMDD形式に変換)
       let fromDate: string | undefined;
       let toDate: string | undefined;
-      
+
       if (options.from || options.to) {
         const convertDate = (dateStr: string): string => {
-          return dateStr.replace(/-/g, '');
+          return dateStr.replace(/-/g, "");
         };
-        
+
         fromDate = options.from ? convertDate(options.from) : undefined;
         toDate = options.to ? convertDate(options.to) : undefined;
       }
-      
+
       // デバッグ用にheadlessモードを無効化
       this.fetcher.updateOptions({ headless: false });
-      
+
       // ブラウザを起動
       const browserResult = await this.fetcher.launchBrowser();
       if (!browserResult.success) {
-        return { success: false, command: "csv-test", error: browserResult.error };
+        return {
+          success: false,
+          command: "csv-test",
+          error: browserResult.error,
+        };
       }
-      
+
       console.log("CSVエクスポートページをテスト中...");
 
       const result = await this.fetcher.getTaskDataFromCSV(fromDate, toDate);
@@ -417,10 +555,12 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       }
 
       console.log("CSVエクスポートページの確認が完了しました。");
-      console.log("ブラウザを10秒間開いたままにします。確認後に手動で閉じてください。");
-      
+      console.log(
+        "ブラウザを10秒間開いたままにします。確認後に手動で閉じてください。",
+      );
+
       // デバッグ用に少し待機
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      await new Promise((resolve) => setTimeout(resolve, 10000));
 
       return { success: true, command: "csv-test", options };
     } catch (error) {
@@ -441,7 +581,9 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
    * @returns CLIの実行結果
    * @private
    */
-  private async handleCSVDownload(options: Record<string, any>): Promise<CLIResult> {
+  private async handleCSVDownload(
+    options: Record<string, any>,
+  ): Promise<CLIResult> {
     try {
       // 日付オプションの処理 (YYYY-MM-DD形式をYYYYMMDD形式に変換)
       let fromDate: string | undefined;
@@ -449,7 +591,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
       if (options.from || options.to) {
         const convertDate = (dateStr: string): string => {
-          return dateStr.replace(/-/g, '');
+          return dateStr.replace(/-/g, "");
         };
 
         fromDate = options.from ? convertDate(options.from) : undefined;
@@ -459,12 +601,20 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       // ブラウザを起動
       const browserResult = await this.fetcher.launchBrowser();
       if (!browserResult.success) {
-        return { success: false, command: "csv-download", error: browserResult.error };
+        return {
+          success: false,
+          command: "csv-download",
+          error: browserResult.error,
+        };
       }
 
       console.log("TaskChuteからCSVファイルをダウンロード中...");
 
-      const result = await this.fetcher.getTaskDataFromCSV(fromDate, toDate, options.output);
+      const result = await this.fetcher.getTaskDataFromCSV(
+        fromDate,
+        toDate,
+        options.output,
+      );
       if (!result.success) {
         return {
           success: false,
@@ -474,12 +624,19 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       }
 
       if (result.downloadPath) {
-        console.log(`CSVファイルのダウンロードが完了しました: ${result.downloadPath}`);
+        console.log(
+          `CSVファイルのダウンロードが完了しました: ${result.downloadPath}`,
+        );
       } else {
         console.log("CSVダウンロード処理が完了しました。");
       }
 
-      return { success: true, command: "csv-download", options, data: { downloadPath: result.downloadPath } };
+      return {
+        success: true,
+        command: "csv-download",
+        options,
+        data: { downloadPath: result.downloadPath },
+      };
     } catch (error) {
       return {
         success: false,
@@ -503,7 +660,7 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     if (!dateRegex.test(date)) {
       return false;
     }
-    
+
     // 実際の日付として有効かチェック
     const dateObj = new Date(date);
     return !isNaN(dateObj.getTime());
@@ -517,8 +674,8 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
   private getCurrentDateString(): string {
     const now = new Date();
     const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   }
 
@@ -541,42 +698,58 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
 
       // 日付形式のバリデーション
       if (options.from && !this.isValidDateFormat(options.from)) {
-        throw new Error(`--from の日付形式が不正です: ${options.from} (YYYY-MM-DD形式で指定してください)`);
+        throw new Error(
+          `--from の日付形式が不正です: ${options.from} (YYYY-MM-DD形式で指定してください)`,
+        );
       }
       if (options.to && !this.isValidDateFormat(options.to)) {
-        throw new Error(`--to の日付形式が不正です: ${options.to} (YYYY-MM-DD形式で指定してください)`);
+        throw new Error(
+          `--to の日付形式が不正です: ${options.to} (YYYY-MM-DD形式で指定してください)`,
+        );
       }
 
       console.log(`[CLI] handleFetch: 日付範囲: ${fromDate} から ${toDate}`);
 
       console.log("[CLI] handleFetch: ページ遷移を開始");
       await this.fetcher.navigateToTaskChute(fromDate, toDate);
-      console.log(`[CLI] handleFetch: ページ遷移完了。現在のURL: ${this.fetcher.getCurrentUrl()}`);
+      console.log(
+        `[CLI] handleFetch: ページ遷移完了。現在のURL: ${this.fetcher.getCurrentUrl()}`,
+      );
 
       console.log("[CLI] handleFetch: ログイン状態を確認");
       if (!await this.fetcher.isUserLoggedIn()) {
         console.error("[CLI] handleFetch: ログイ���していません");
-        return { success: false, command: "fetch", error: "ログインしていません。`taskchute-cli login` を実行してください。" };
+        return {
+          success: false,
+          command: "fetch",
+          error:
+            "ログインしていません。`taskchute-cli login` を実行してください。",
+        };
       }
       console.log("[CLI] handleFetch: ログイン済みです");
 
       console.log("[CLI] handleFetch: TaskChuteデータ取得開始");
       const taskData = await this.fetcher.getTaskData();
-      
+
       if (!taskData.success) {
-        console.error(`[CLI] handleFetch: データの取得に失敗しました: ${taskData.error}`);
-        return { 
-          success: false, 
-          command: "fetch", 
-          error: `データの取得に失敗しました: ${taskData.error}`
+        console.error(
+          `[CLI] handleFetch: データの取得に失敗しました: ${taskData.error}`,
+        );
+        return {
+          success: false,
+          command: "fetch",
+          error: `データの取得に失敗しました: ${taskData.error}`,
         };
       }
       console.log("[CLI] handleFetch: TaskChuteデータ取得完了");
 
       console.log("[CLI] handleFetch: ファイルへの保存を開始");
       let saveResult;
-      if (options.output.endsWith('.json')) {
-        saveResult = await this.fetcher.saveJSONToFile(taskData, options.output);
+      if (options.output.endsWith(".json")) {
+        saveResult = await this.fetcher.saveJSONToFile(
+          taskData,
+          options.output,
+        );
       } else {
         const htmlResult = await this.fetcher.getPageHTML();
         if (!htmlResult.success) {
@@ -586,27 +759,33 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
             error: "HTMLの取得に失敗しました",
           };
         }
-        saveResult = await this.fetcher.saveHTMLToFile(htmlResult.html!, options.output);
+        saveResult = await this.fetcher.saveHTMLToFile(
+          htmlResult.html!,
+          options.output,
+        );
       }
 
       if (!saveResult.success) {
         console.error("[CLI] handleFetch: ファイルの保存に失敗しました");
-        return { 
-          success: false, 
-          command: "fetch", 
-          error: `ファイルの保存に失敗しました: ${options.output}` 
+        return {
+          success: false,
+          command: "fetch",
+          error: `ファイルの保存に失敗しました: ${options.output}`,
         };
       }
 
-      console.log(`[CLI] handleFetch: データを ${options.output} に保存しました。`);
+      console.log(
+        `[CLI] handleFetch: データを ${options.output} に保存しました。`,
+      );
       return { success: true, command: "fetch", options };
-
     } catch (error) {
-      console.error(`[CLI] handleFetch: エラー発生 - ${(error as Error).message}`);
-      return { 
-        success: false, 
-        command: "fetch", 
-        error: (error as Error).message 
+      console.error(
+        `[CLI] handleFetch: エラー発生 - ${(error as Error).message}`,
+      );
+      return {
+        success: false,
+        command: "fetch",
+        error: (error as Error).message,
       };
     } finally {
       console.log("[CLI] handleFetch: 終了");
@@ -614,14 +793,15 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
     }
   }
 
-
   /**
    * Cookieインポート処理をハンドルする
    * @param options コマンドラインオプション
    * @returns CLIの実行結果
    * @private
    */
-  private async handleImportCookies(options: Record<string, any>): Promise<CLIResult> {
+  private async handleImportCookies(
+    options: Record<string, any>,
+  ): Promise<CLIResult> {
     try {
       if (!options.file) {
         console.log(`
@@ -642,7 +822,11 @@ Cookie インポートの手順:
 6. 以下のコマンドでインポート:
    taskchute-cli import-cookies <cookies.json>
 `);
-        return { success: false, command: "import-cookies", error: "ファイルパスを指定してください" };
+        return {
+          success: false,
+          command: "import-cookies",
+          error: "ファイルパスを指定してください",
+        };
       }
 
       console.log(`Cookieファイルをインポート中: ${options.file}`);
@@ -651,7 +835,11 @@ Cookie インポートの手順:
       const result = await cookieManager.importCookiesFromFile(options.file);
 
       if (!result.success) {
-        return { success: false, command: "import-cookies", error: result.error };
+        return {
+          success: false,
+          command: "import-cookies",
+          error: result.error,
+        };
       }
 
       console.log(`
@@ -681,15 +869,21 @@ Cookie インポートの手順:
   private async handleStatus(options: Record<string, any>): Promise<CLIResult> {
     try {
       const sessionStatus = await this.auth.getSessionStatus();
-      
+
       if (sessionStatus.isLoggedIn) {
         console.log("ログイン状態: ログイン済み");
         console.log(`Email: ${sessionStatus.email}`);
-        console.log(`ログイン時刻: ${sessionStatus.loginTime?.toLocaleString()}`);
-        console.log(`セッション有効期限: ${sessionStatus.expiresAt?.toLocaleString()}`);
-        
+        console.log(
+          `ログイン時刻: ${sessionStatus.loginTime?.toLocaleString()}`,
+        );
+        console.log(
+          `セッション有効期限: ${sessionStatus.expiresAt?.toLocaleString()}`,
+        );
+
         if (sessionStatus.expiresAt && sessionStatus.expiresAt < new Date()) {
-          console.log("⚠️  セッションの有効期限が切れています。再ログインが必要です。");
+          console.log(
+            "⚠️  セッションの有効期限が切れています。再ログインが必要です。",
+          );
         }
       } else {
         console.log("ログイン状態: 未ログイン");
@@ -697,12 +891,11 @@ Cookie インポートの手順:
       }
 
       return { success: true, command: "status", options };
-
     } catch (error) {
-      return { 
-        success: false, 
-        command: "status", 
-        error: (error as Error).message 
+      return {
+        success: false,
+        command: "status",
+        error: (error as Error).message,
       };
     }
   }
