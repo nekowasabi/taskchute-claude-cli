@@ -305,8 +305,15 @@ export interface PlatformLaunchConfig {
 export function getFullLaunchConfig(platformInfo: PlatformInfo): PlatformLaunchConfig {
   if (platformInfo.isMac) {
     return {
-      channel: 'chrome',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      // Why: channel:'chrome' (システムChrome) ではなくPlaywrightバンドルChromiumを使用する
+      // x86_64のDeno (Rosetta) からシステムChromeを起動すると
+      // remote-debugging-pipe接続がタイムアウトする。
+      // PlaywrightバンドルChromiumはarm64-nativeなため正常起動できる。
+      // Why: --no-sandbox を ignoreDefaultArgs で除外する
+      // macOS では --no-sandbox がサンドボックス機構と競合し
+      // remote-debugging-pipe接続が確立できなくなる。
+      args: [],
+      ignoreDefaultArgs: ['--no-sandbox'],
       acceptDownloads: true,
       useExistingProfile: true,
       usePlatformProfilePath: false,

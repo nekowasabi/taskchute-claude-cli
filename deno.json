@@ -16,7 +16,7 @@
   "imports": {
     "gunshi": "jsr:@kazupon/gunshi@^0.26.3",
     "gunshi/": "jsr:@kazupon/gunshi@^0.26.3/",
-    "playwright": "npm:playwright@1.40.0",
+    "playwright": "npm:playwright@1.54.0",
     "std/": "https://deno.land/std@0.208.0/",
     "testing/": "https://deno.land/std@0.208.0/testing/"
   },

@@ -217,8 +217,17 @@ TaskChute CLI - TaskChute Cloudとの連携ツール
       console.log("ブラウザを起動します。TaskChute Cloudにログインしてください...");
       this.fetcher.updateOptions({ headless: false });
 
-      await this.fetcher.launchBrowser();
-      await this.fetcher.navigateToTaskChute();
+      const browserResult = await this.fetcher.launchBrowser();
+      if (!browserResult.success) {
+        console.error(`ブラウザの起動に失敗しました: ${browserResult.error}`);
+        return { success: false, command: "login", error: browserResult.error };
+      }
+
+      const navResult = await this.fetcher.navigateToTaskChute();
+      if (!navResult.success) {
+        console.error(`TaskChute Cloudへのアクセスに失敗しました: ${navResult.error}`);
+        return { success: false, command: "login", error: navResult.error };
+      }
 
       console.log("ログイン成功を待っています...（最大5分）");
       const loginSuccess = await this.fetcher.waitForLoginSuccess(300000); // 5分待機
