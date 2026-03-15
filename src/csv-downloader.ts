@@ -415,7 +415,9 @@ export class CSVDownloader {
       const downloadResult = await this.executeDownload(
         page,
         downloadButton,
-        outputDir
+        outputDir,
+        startDate,
+        endDate
       );
 
       return downloadResult;
@@ -573,7 +575,9 @@ export class CSVDownloader {
   private async executeDownload(
     page: Page,
     downloadButton: Locator,
-    outputDir: string
+    outputDir: string,
+    startDate: string,
+    endDate: string
   ): Promise<CSVDownloadResult> {
     // 出力ディレクトリを確保
     await ensureDir(outputDir);
@@ -650,9 +654,22 @@ export class CSVDownloader {
     // APIレスポンスが取得できた場合
     if (apiResponse) {
       console.log(`[CSVDownloader][DEBUG] APIレスポンス取得: url=${apiResponse.url()}, status=${apiResponse.status()}`);
-      const csvContent = await apiResponse.text();
+      let csvContent = await apiResponse.text();
       console.log(`[CSVDownloader][DEBUG] レスポンスボディ: ${csvContent.length}文字, 先頭100文字: ${csvContent.substring(0, 100)}`);
-      const savePath = `${outputDir}/taskchute-export-${Date.now()}.csv`;
+      // APIがJSON形式で返す場合、csvDataフィールドを抽出
+      if (csvContent.trimStart().startsWith("{")) {
+        try {
+          const json = JSON.parse(csvContent);
+          if (json.csvData) {
+            csvContent = json.csvData;
+            console.log(`[CSVDownloader][DEBUG] JSONレスポンスからcsvDataを抽出: ${csvContent.length}文字`);
+          }
+        } catch {
+          // JSONパース失敗 = そのままCSVとして扱う
+        }
+      }
+      const filename = `tasks_${startDate}-${endDate}.csv`;
+      const savePath = `${outputDir}/${filename}`;
       await Deno.writeTextFile(savePath, csvContent);
 
       const tasks = this.parseCSVContent(csvContent);
@@ -667,8 +684,8 @@ export class CSVDownloader {
     // downloadイベントが取得できた場合
     if (downloadEvent) {
       console.log("[CSVDownloader] ダウンロードイベントをキャッチしました");
-      const suggestedFilename = downloadEvent.suggestedFilename() || "taskchute-export.csv";
-      const savePath = `${outputDir}/${suggestedFilename}`;
+      const filename = `tasks_${startDate}-${endDate}.csv`;
+      const savePath = `${outputDir}/${filename}`;
       await downloadEvent.saveAs(savePath);
 
       const csvContent = await Deno.readTextFile(savePath);
@@ -739,7 +756,8 @@ export class CSVDownloader {
           const content = await Deno.readTextFile(file.path);
           if (content.includes(",") || content.includes('","')) {
             // CSVファイルとして処理
-            const savePath = `${outputDir}/taskchute-export-${Date.now()}.csv`;
+            const filename = `tasks_${startDate}-${endDate}.csv`;
+            const savePath = `${outputDir}/${filename}`;
             await Deno.copyFile(file.path, savePath);
 
             const tasks = this.parseCSVContent(content);
