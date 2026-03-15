@@ -651,7 +651,7 @@ export class TaskChuteDataFetcher {
       outputDir: downloadPath,
     });
     // Why: Adapter — CSVDownloadResult to FetchResult<TaskData[]> conversion
-    return { success: result.success, data: result.tasks, error: result.error };
+    return { success: result.success, data: result.tasks, error: result.error, downloadPath: result.downloadPath };
   }
 
   /**

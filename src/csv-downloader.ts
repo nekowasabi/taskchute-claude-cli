@@ -345,7 +345,7 @@ export class CSVDownloader {
   ): Promise<CSVDownloadResult> {
     const startDate = this.formatDate(options.fromDate || this.getDefaultDate());
     const endDate = this.formatDate(options.toDate || this.getDefaultDate());
-    const outputDir = options.outputDir || "tmp/claude";
+    const outputDir = options.outputDir || Deno.env.get("HOME") + "/repos/changelog/ai/csv";
 
     try {
       // Step 1: CSVエクスポートページに移動
@@ -361,9 +361,9 @@ export class CSVDownloader {
       await this.waitForReactReady(page);
 
       // Step 3: デバッグ: ページHTMLを保存してDOM構造を確認
-      const debugHtmlPath = `${options.outputDir || "tmp/claude"}/debug-csv-export-page.html`;
+      const debugHtmlPath = `${options.outputDir || Deno.env.get("HOME") + "/repos/changelog/ai/csv"}/debug-csv-export-page.html`;
       try {
-        await ensureDir(options.outputDir || "tmp/claude");
+        await ensureDir(options.outputDir || Deno.env.get("HOME") + "/repos/changelog/ai/csv");
         const html = await page.content();
         await Deno.writeTextFile(debugHtmlPath, html);
         console.log(`[CSVDownloader][DEBUG] ページHTML保存: ${debugHtmlPath} (${html.length}文字)`);
